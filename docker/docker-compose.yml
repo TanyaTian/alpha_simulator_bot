@@ -5,7 +5,7 @@ services:
       context: ../  # 构建上下文指向根目录
       dockerfile: Dockerfile  # 指定根目录下的 Dockerfile
     volumes:
-      - ../logs:/app/logs  # 从 docker/ 到根目录下的 logs/
+      - ../logs:/logs  # 从 docker/ 到根目录下的 logs/
       - ../data:/data  # 从 docker/ 到根目录下的 data/
       - ../config:/config  # 新增挂载
     command: python main.py
