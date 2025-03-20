@@ -1,8 +1,8 @@
 version: '3.8'
 services:
   alpha_simulator_bot:
-    build: ..
+    build: .
     volumes:
-      - ../logs:/app/logs
-      - ../data:/app/data
+      - ./logs:/app/logs
+      - ./data:/app/data
     command: python main.py
