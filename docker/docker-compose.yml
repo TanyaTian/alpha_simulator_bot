@@ -7,4 +7,5 @@ services:
     volumes:
       - ../logs:/app/logs  # 从 docker/ 到根目录下的 logs/
       - ../data:/app/data  # 从 docker/ 到根目录下的 data/
+      - ../config:/config  # 新增挂载
     command: python main.py
