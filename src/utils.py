@@ -32,50 +32,51 @@ def write_csv(df, file_path):
 
 def load_config(config_file="config/config.ini"):
     """
-    从配置文件读取 username 和 password。
+    从配置文件读取 username、password、max_concurrent 和 batch_number_for_every_queue。
 
     Args:
         config_file (str): 配置文件路径，默认为 "config/config.ini"。
 
     Returns:
-        tuple: (username, password) 或 (None, None) 如果读取失败。
+        dict: 包含 username, password, max_concurrent, batch_number_for_every_queue 的字典，
+              如果读取失败则返回 None。
     """
-    # 获取项目根目录
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
     config_path = os.path.join(project_root, config_file)
 
-    # 初始化配置解析器
     config = configparser.ConfigParser()
 
     try:
-        # 检查文件是否存在
         if not os.path.exists(config_path):
             logger.error(f"Config file {config_path} not found.")
-            return None, None
+            return None
 
-        # 读取配置文件
         config.read(config_path)
 
-        # 从 [Credentials] 部分读取 username 和 password
-        username = config.get('Credentials', 'username')
-        password = config.get('Credentials', 'password')
+        config_data = {
+            'username': config.get('Credentials', 'username'),
+            'password': config.get('Credentials', 'password'),
+            'max_concurrent': config.getint('Credentials', 'max_concurrent'),
+            'batch_number_for_every_queue': config.getint('Credentials', 'batch_number_for_every_queue')
+        }
 
-        logger.info(f"Successfully loaded config from {config_path}")
-        return username, password
+        # 日志记录参数值，方便调试
+        logger.info(f"Loaded config from {config_path}: username={config_data['username']}, "
+                   f"max_concurrent={config_data['max_concurrent']} (type: {type(config_data['max_concurrent'])}), "
+                   f"batch_number={config_data['batch_number_for_every_queue']} (type: {type(config_data['batch_number_for_every_queue'])})")
+
+        return config_data
 
     except configparser.NoSectionError:
         logger.error(f"Section 'Credentials' not found in {config_path}")
-        return None, None
+        return None
     except configparser.NoOptionError as e:
         logger.error(f"Missing key in config: {e}")
-        return None, None
+        return None
+    except ValueError as e:
+        logger.error(f"Invalid value in config (must be integer for max_concurrent or batch_number): {e}")
+        return None
     except Exception as e:
         logger.error(f"Error loading config: {e}")
-        return None, None
-
-
-# 示例调用
-if __name__ == "__main__":
-    username, password = load_config()
-    print(f"Username: {username}, Password: {password}")
+        return None

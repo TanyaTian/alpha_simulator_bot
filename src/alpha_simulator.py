@@ -3,9 +3,11 @@ import csv
 import requests
 import os
 import ast
+import json
+import signal
 from datetime import datetime
 from pytz import timezone
-from logger import Logger  # 导入 Logger 类
+from logger import Logger  # 假设已定义 Logger 类
 
 # 获取美国东部时间
 eastern = timezone('US/Eastern')
@@ -13,15 +15,24 @@ fmt = '%Y-%m-%d'
 loc_dt = datetime.now(eastern)
 print("Current time in Eastern is", loc_dt.strftime(fmt))
 
+# 全局退出标志
+running = True
+
+def signal_handler(signum, frame):
+    """处理 SIGTERM 和 SIGINT 信号"""
+    global running
+    Logger().info(f"Received signal {signum}, initiating shutdown...")
+    running = False
+
 class AlphaSimulator:
     """Alpha模拟器类，用于管理量化策略的模拟过程"""
 
-    # 类级别常量配置
     TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
     FILE_CONFIG = {
         "input_file": "alpha_list_pending_simulated.csv",
         "fail_file": "fail_alphas.csv",
-        "output_prefix": "simulated_alphas_"
+        "output_prefix": "simulated_alphas_",
+        "state_file": "simulator_state.json"
     }
 
     def __init__(self, max_concurrent, username, password, batch_number_for_every_queue):
@@ -33,6 +44,10 @@ class AlphaSimulator:
             password (str): 登录密码
             batch_number_for_every_queue (int): 每批处理数量
         """
+        # 注册信号处理
+        signal.signal(signal.SIGTERM, signal_handler)
+        signal.signal(signal.SIGINT, signal_handler)
+
         # 创建 Logger 实例
         self.logger = Logger()
 
@@ -49,6 +64,7 @@ class AlphaSimulator:
         self.fail_alphas = os.path.join(self.data_dir, self.FILE_CONFIG["fail_file"])
         timestamp = loc_dt.strftime(self.TIMESTAMP_FORMAT)
         self.simulated_alphas = os.path.join(self.data_dir, f'{self.FILE_CONFIG["output_prefix"]}{timestamp}.csv')
+        self.state_file = os.path.join(self.data_dir, self.FILE_CONFIG["state_file"])
 
         # 关键文件存在性验证
         self._validate_critical_files()
@@ -61,6 +77,9 @@ class AlphaSimulator:
         self.session = self.sign_in(username, password)
         self.sim_queue_ls = []
         self.batch_number_for_every_queue = batch_number_for_every_queue
+
+        # 加载上次未完成的 active_simulations
+        self._load_previous_state()
 
     def _validate_critical_files(self):
         """验证关键输入文件是否存在"""
@@ -82,6 +101,21 @@ class AlphaSimulator:
                 "1. 检查data目录结构是否符合预期\n"
                 "2. 确认文件生成流程已执行"
             )
+
+    def _load_previous_state(self):
+        if os.path.exists(self.state_file):
+            with open(self.state_file, 'r') as f:
+                state = json.load(f)
+                self.active_simulations = state.get("active_simulations", [])
+                self.logger.info(f"Loaded {len(self.active_simulations)} previous active simulations from state.")
+
+            while self.active_simulations and running:
+                try:
+                    self.check_simulation_status()
+                except Exception as e:
+                    self.logger.error(f"Error checking previous simulations: {e}")
+                time.sleep(3)
+            self.logger.info("All previous active simulations processed.")
 
     def sign_in(self, username, password):
         """登录WorldQuant BRAIN平台"""
@@ -147,7 +181,7 @@ class AlphaSimulator:
             else:
                 raise
 
-        queue_path = os.path.join(os.path.dirname(self.alpha_list_file_path), 'sim_queue.csv')
+        queue_path = os.path.join(self.data_dir, 'sim_queue.csv')
         if alphas:
             with open(queue_path, 'w', newline='') as file:
                 writer = csv.DictWriter(file, fieldnames=alphas[0].keys())
@@ -185,6 +219,10 @@ class AlphaSimulator:
 
     def load_new_alpha_and_simulate(self):
         """加载并模拟新的alpha"""
+        global running
+        if not running:
+            return
+
         if len(self.sim_queue_ls) < 1:
             self.sim_queue_ls = self.read_alphas_from_csv_in_batches(self.batch_number_for_every_queue)
 
@@ -197,6 +235,7 @@ class AlphaSimulator:
         try:
             alpha = self.sim_queue_ls.pop(0)
             self.logger.info(f"Starting simulation for alpha: {alpha['regular']} with settings: {alpha['settings']}")
+            self.logger.info(f"Remaining in sim_queue_ls: {len(self.sim_queue_ls)}")
             location_url = self.simulate_alpha(alpha)
             if location_url:
                 self.active_simulations.append(location_url)
@@ -244,12 +283,38 @@ class AlphaSimulator:
                 writer.writerow(sim_progress)
         self.logger.info(f"Total {count} simulations are in process for account {self.username}.")
 
+    def save_state(self):
+        """保存当前状态"""
+        state = {
+            "active_simulations": self.active_simulations,
+            "timestamp": datetime.now(eastern).strftime(self.TIMESTAMP_FORMAT)
+        }
+        with open(self.state_file, 'w') as f:
+            json.dump(state, f)
+        self.logger.info(f"Saved {len(self.active_simulations)} active simulations to {self.state_file}")
+
+        if self.sim_queue_ls:
+            with open(self.alpha_list_file_path, 'a', newline='') as file:
+                writer = csv.DictWriter(file, fieldnames=self.sim_queue_ls[0].keys())
+                if os.stat(self.alpha_list_file_path).st_size == 0:
+                    writer.writeheader()
+                writer.writerows(self.sim_queue_ls)
+            self.logger.info(f"Reinserted {len(self.sim_queue_ls)} alphas back to {self.alpha_list_file_path}")
+            self.sim_queue_ls = []
+
     def manage_simulations(self):
         """管理整个模拟过程"""
         if not self.session:
             self.logger.error("Failed to sign in. Exiting...")
             return
-        while True:
-            self.check_simulation_status()
-            self.load_new_alpha_and_simulate()
-            time.sleep(3)
+
+        try:
+            while running:
+                self.check_simulation_status()
+                self.load_new_alpha_and_simulate()
+                time.sleep(3)
+        except KeyboardInterrupt:
+            self.logger.info("Manual interruption detected.")
+        finally:
+            self.logger.info("Shutting down, saving state...")
+            self.save_state()

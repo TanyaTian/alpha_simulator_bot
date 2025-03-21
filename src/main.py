@@ -2,6 +2,7 @@
 import time
 import os
 from alpha_simulator import AlphaSimulator
+from alpha_simulator import running
 from utils import load_config
 from logger import Logger  # 导入 Logger 类
 
@@ -14,7 +15,15 @@ def main():
     从配置文件读取 username 和 password。
     """
     # 从配置文件读取凭据
-    username, password = load_config()
+    config = load_config()
+    if config is None:
+        logger.error("Failed to load configuration. Exiting...")
+        return
+
+    username = config['username']
+    password = config['password']
+    max_concurrent = config['max_concurrent']
+    batch_number_for_every_queue = config['batch_number_for_every_queue']
     if username is None or password is None:
         logger.error("Failed to load username and password from config. Exiting...")
         return
@@ -22,10 +31,10 @@ def main():
     # 初始化 AlphaSimulator
     try:
         simulator = AlphaSimulator(
-            max_concurrent=3,
+            max_concurrent=max_concurrent,
             username=username,
             password=password,
-            batch_number_for_every_queue=20
+            batch_number_for_every_queue=batch_number_for_every_queue
         )
         logger.info("AlphaSimulator initialized successfully.")
     except FileNotFoundError as e:
@@ -36,15 +45,15 @@ def main():
         return
 
     # 主循环
-    while True:
+    while running:
         try:
             if simulator is None or not simulator.session:
                 logger.warning("Simulator not initialized or session invalid, attempting to reinitialize...")
                 simulator = AlphaSimulator(
-                    max_concurrent=3,
+                    max_concurrent=max_concurrent,
                     username=username,
                     password=password,
-                    batch_number_for_every_queue=1000
+                    batch_number_for_every_queue=batch_number_for_every_queue
                 )
                 time.sleep(10)
                 continue
