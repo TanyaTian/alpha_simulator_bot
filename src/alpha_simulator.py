@@ -31,7 +31,7 @@ class AlphaSimulator:
     FILE_CONFIG = {
         "input_file": "alpha_list_pending_simulated.csv",
         "fail_file": "fail_alphas.csv",
-        "output_prefix": "simulated_alphas_",
+        "output_file": "simulated_alphas.csv",  # 基础文件名
         "state_file": "simulator_state.json"
     }
 
@@ -62,8 +62,6 @@ class AlphaSimulator:
         # 构建文件路径体系
         self.alpha_list_file_path = os.path.join(self.data_dir, self.FILE_CONFIG["input_file"])
         self.fail_alphas = os.path.join(self.data_dir, self.FILE_CONFIG["fail_file"])
-        timestamp = loc_dt.strftime(self.TIMESTAMP_FORMAT)
-        self.simulated_alphas = os.path.join(self.data_dir, f'{self.FILE_CONFIG["output_prefix"]}{timestamp}.csv')
         self.state_file = os.path.join(self.data_dir, self.FILE_CONFIG["state_file"])
 
         # 关键文件存在性验证
@@ -263,11 +261,31 @@ class AlphaSimulator:
             return None
 
     def check_simulation_status(self):
-        """检查所有活跃模拟的状态"""
+        """检查所有活跃模拟的状态，并将结果写入按天轮转的输出文件"""
+        from logging.handlers import TimedRotatingFileHandler
+        import logging
+
         count = 0
         if len(self.active_simulations) == 0:
             self.logger.info("No one is in active simulation now")
             return None
+
+        # 设置输出文件路径（基础文件名）
+        output_file = os.path.join(self.data_dir, self.FILE_CONFIG["output_file"])
+
+        # 创建 TimedRotatingFileHandler，按天轮转
+        handler = TimedRotatingFileHandler(
+            filename=output_file,
+            when="midnight",  # 每天 0 点轮转
+            interval=1,  # 轮转间隔为 1 天
+            backupCount=30,  # 保留最近 30 天的文件
+            encoding="utf-8"
+        )
+
+        # 设置一个临时的 logger 用于写入 CSV（避免影响主 logger）
+        temp_logger = logging.getLogger("CSVOutput")
+        temp_logger.setLevel(logging.INFO)
+        temp_logger.addHandler(handler)
 
         for sim_url in self.active_simulations[:]:
             sim_progress = self.check_simulation_progress(sim_url)
@@ -278,10 +296,19 @@ class AlphaSimulator:
             status = sim_progress.get("status")
             self.logger.info(f"Alpha id: {alpha_id} ended with status: {status}. Removing from active list.")
             self.active_simulations.remove(sim_url)
-            with open(self.simulated_alphas, 'a', newline='') as file:
+
+            # 写入 CSV 文件
+            with open(output_file, 'a', newline='') as file:
                 writer = csv.DictWriter(file, fieldnames=sim_progress.keys())
+                # 如果文件为空，写入表头
+                if os.stat(output_file).st_size == 0:
+                    writer.writeheader()
                 writer.writerow(sim_progress)
+
         self.logger.info(f"Total {count} simulations are in process for account {self.username}.")
+        # 移除临时 handler，避免内存泄漏
+        temp_logger.removeHandler(handler)
+        handler.close()
 
     def save_state(self):
         """保存当前状态"""
