@@ -1,11 +1,8 @@
 import os
-import time
 
-import schedule
-import threading
 
 from alpha_simulator import AlphaSimulator
-from src.process_simulated_alphas import ProcessSimulatedAlphas
+from process_simulated_alphas import ProcessSimulatedAlphas
 from utils import load_config
 from logger import Logger  # 假设已定义 Logger 类
 
