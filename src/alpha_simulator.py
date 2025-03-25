@@ -5,9 +5,11 @@ import os
 import ast
 import json
 import signal
-from datetime import datetime
+import schedule
+import threading
 from pytz import timezone
 from logger import Logger  # 假设已定义 Logger 类
+from datetime import datetime, timedelta
 
 # 获取美国东部时间
 eastern = timezone('US/Eastern')
@@ -79,6 +81,8 @@ class AlphaSimulator:
         # 加载上次未完成的 active_simulations
         self._load_previous_state()
 
+        self.start_rotation_scheduler()  # 添加轮转调度
+
     def _validate_critical_files(self):
         """验证关键输入文件是否存在"""
         missing_files = []
@@ -114,6 +118,34 @@ class AlphaSimulator:
                     self.logger.error(f"Error checking previous simulations: {e}")
                 time.sleep(3)
             self.logger.info("All previous active simulations processed.")
+
+    def rotate_output_file(self):
+        """每天 0 点轮转 output 文件，将前一天的文件重命名为 YYYY-MM-DD 格式"""
+        current_date = datetime.now().date()
+        yesterday = current_date - timedelta(days=1)
+        yesterday_str = yesterday.strftime('%Y-%m-%d')
+        output_file = os.path.join(self.data_dir, self.FILE_CONFIG["output_file"])
+        backup_file = os.path.join(self.data_dir, f'simulated_alphas.csv.{yesterday_str}')
+
+        if os.path.exists(output_file):
+            if os.path.exists(backup_file):
+                os.remove(backup_file)  # 删除旧备份（如果存在）
+            os.rename(output_file, backup_file)
+            self.logger.info(f"Rotated {output_file} to {backup_file}")
+        else:
+            self.logger.warning(f"Output file {output_file} does not exist for rotation")
+
+    def start_rotation_scheduler(self):
+        """启动文件轮转调度，每天 0 点执行"""
+        schedule.every().day.at("00:00").do(self.rotate_output_file)
+
+        def run_schedule():
+            while True:
+                schedule.run_pending()
+                time.sleep(1)
+
+        threading.Thread(target=run_schedule, daemon=True).start()
+        self.logger.info("Started output file rotation scheduler at 00:00 daily")
 
     def sign_in(self, username, password):
         """登录WorldQuant BRAIN平台"""
@@ -261,31 +293,13 @@ class AlphaSimulator:
             return None
 
     def check_simulation_status(self):
-        """检查所有活跃模拟的状态，并将结果写入按天轮转的输出文件"""
-        from logging.handlers import TimedRotatingFileHandler
-        import logging
-
+        """检查所有活跃模拟的状态，并将结果写入 output 文件"""
         count = 0
         if len(self.active_simulations) == 0:
             self.logger.info("No one is in active simulation now")
             return None
 
-        # 设置输出文件路径（基础文件名）
         output_file = os.path.join(self.data_dir, self.FILE_CONFIG["output_file"])
-
-        # 创建 TimedRotatingFileHandler，按天轮转
-        handler = TimedRotatingFileHandler(
-            filename=output_file,
-            when="midnight",  # 每天 0 点轮转
-            interval=1,  # 轮转间隔为 1 天
-            backupCount=30,  # 保留最近 30 天的文件
-            encoding="utf-8"
-        )
-
-        # 设置一个临时的 logger 用于写入 CSV（避免影响主 logger）
-        temp_logger = logging.getLogger("CSVOutput")
-        temp_logger.setLevel(logging.INFO)
-        temp_logger.addHandler(handler)
 
         for sim_url in self.active_simulations[:]:
             sim_progress = self.check_simulation_progress(sim_url)
@@ -306,9 +320,6 @@ class AlphaSimulator:
                 writer.writerow(sim_progress)
 
         self.logger.info(f"Total {count} simulations are in process for account {self.username}.")
-        # 移除临时 handler，避免内存泄漏
-        temp_logger.removeHandler(handler)
-        handler.close()
 
     def save_state(self):
         """保存当前状态"""

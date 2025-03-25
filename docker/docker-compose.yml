@@ -8,5 +8,6 @@ services:
       - ../logs:/logs  # 从 docker/ 到根目录下的 logs/
       - ../data:/data  # 从 docker/ 到根目录下的 data/
       - ../config:/config  # 新增挂载
+      - ../output:/output  # 新增挂载
     command: python main.py
     stop_grace_period: 30s  # 设置 30 秒超时

@@ -1,7 +1,14 @@
 import os
+import time
+
+import schedule
+import threading
+
 from alpha_simulator import AlphaSimulator
+from src.process_simulated_alphas import ProcessSimulatedAlphas
 from utils import load_config
 from logger import Logger  # 假设已定义 Logger 类
+
 
 # 创建全局 Logger 实例
 logger = Logger()
@@ -46,6 +53,15 @@ def main():
     if not os.path.exists(input_file_path):
         logger.error(f"{input_file_path} does not exist. Exiting...")
         return
+
+    # 构建基础路径
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    data_dir = os.path.join(project_root, 'data')
+    output_dir = os.path.join(project_root, 'output')
+    # 实例化 ProcessSimulatedAlphas 并启动调度
+    processor = ProcessSimulatedAlphas(data_dir, output_dir, 1.25, 1.0, username, password)
+    processor.start_schedule()
 
     # 启动模拟管理
     logger.info("Starting simulation management...")
