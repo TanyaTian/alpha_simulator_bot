@@ -301,7 +301,7 @@ class ProcessSimulatedAlphas:
                 time.sleep(1)
 
         threading.Thread(target=run_schedule, daemon=True).start()
-        self.logger.info("Daily scheduler started, will run at 02:30 every day.")
+        self.logger.info("Daily scheduler started, will run at 04:00 every day.")
 
 """
 data_dir = "../data"
