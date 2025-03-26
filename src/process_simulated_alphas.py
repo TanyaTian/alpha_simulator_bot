@@ -292,8 +292,8 @@ class ProcessSimulatedAlphas:
         logger.info(f"Processing completed for {date_str}, all alpha IDs processed.")
 
     def start_schedule(self):
-        """启动每日调度任务，每天 00:30 执行"""
-        schedule.every().day.at("00:30").do(self.run)
+        """启动每日调度任务，每天 04:30 执行"""
+        schedule.every().day.at("04:30").do(self.run)
 
         def run_schedule():
             while True:
@@ -301,7 +301,7 @@ class ProcessSimulatedAlphas:
                 time.sleep(1)
 
         threading.Thread(target=run_schedule, daemon=True).start()
-        self.logger.info("Daily scheduler started, will run at 04:00 every day.")
+        self.logger.info("Daily scheduler started, will run at 04:30 every day.")
 
 """
 data_dir = "../data"
