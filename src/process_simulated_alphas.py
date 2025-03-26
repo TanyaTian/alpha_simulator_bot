@@ -87,28 +87,25 @@ class ProcessSimulatedAlphas:
                 logger.error(f"Error deleting {alpha_ids_file}: {e}")
                 raise
         else:
-            # 写入剩余 alpha ID 到临时文件
-            temp_file = None
+            # 写入剩余 alpha ID 到临时文件 temp_alpha_ids.{date_str}.csv
+            temp_file = os.path.join(self.output_dir, f'temp_alpha_ids.{date_str}.csv')
             try:
-                with tempfile.NamedTemporaryFile(mode='w', delete=False, newline='', encoding='utf-8') as temp:
-                    temp_file = temp.name
-                    writer = csv.writer(temp)
+                with open(temp_file, 'w', newline='', encoding='utf-8') as file:
+                    writer = csv.writer(file)
                     writer.writerow(['alpha_id'])  # 写入表头
                     for alpha_id in remaining_alpha_ids:
                         writer.writerow([alpha_id])
                 logger.info(f"Wrote {len(remaining_alpha_ids)} remaining alpha IDs to temporary file {temp_file}")
 
-                # 用临时文件替换原文件
-                os.replace(temp_file, alpha_ids_file)
+                # 删除原文件并重命名临时文件
+                os.remove(alpha_ids_file)
+                os.rename(temp_file, alpha_ids_file)
                 logger.info(f"Replaced {alpha_ids_file} with updated alpha IDs, {len(remaining_alpha_ids)} remaining.")
             except Exception as e:
                 logger.error(f"Error updating {alpha_ids_file}: {e}")
-                if temp_file and os.path.exists(temp_file):
+                if os.path.exists(temp_file):
                     os.remove(temp_file)
                 raise
-            finally:
-                if temp_file and os.path.exists(temp_file):
-                    os.remove(temp_file)
 
         logger.info(f"Loaded {len(loaded_alpha_ids)} alpha IDs from {alpha_ids_file}")
         return loaded_alpha_ids
@@ -304,5 +301,15 @@ class ProcessSimulatedAlphas:
                 time.sleep(1)
 
         threading.Thread(target=run_schedule, daemon=True).start()
-        self.logger.info("Daily scheduler started, will run at 00:30 every day.")
+        self.logger.info("Daily scheduler started, will run at 02:30 every day.")
 
+"""
+data_dir = "../data"
+output_dir = "../output"
+specified_sharpe = 1.0
+specified_fitness = 0.8
+username = "tianyuan411249897@gmail.com"
+password = "k9979kui8"
+processor = ProcessSimulatedAlphas(data_dir, output_dir, specified_sharpe, specified_fitness, username, password)
+processor.run()
+"""

@@ -76,6 +76,7 @@ class AlphaSimulator:
         self.password = password
         self.session = self.sign_in(username, password)
         self.sim_queue_ls = []
+        self.sim_queue_update_time = time.time()
         self.batch_number_for_every_queue = batch_number_for_every_queue
 
         # 加载上次未完成的 active_simulations
@@ -255,6 +256,7 @@ class AlphaSimulator:
 
         if len(self.sim_queue_ls) < 1:
             self.sim_queue_ls = self.read_alphas_from_csv_in_batches(self.batch_number_for_every_queue)
+            self.sim_queue_update_time = time.time()  # 更新时间戳
 
         if len(self.active_simulations) >= self.max_concurrent:
             self.logger.info(f"Max concurrent simulations reached ({self.max_concurrent}). Waiting 2 seconds")
@@ -294,13 +296,23 @@ class AlphaSimulator:
 
     def check_simulation_status(self):
         """检查所有活跃模拟的状态，并将结果写入 output 文件"""
+
+        current_time = time.time()
+        time_diff = current_time - self.sim_queue_update_time
+        if time_diff > 10800 and len(self.active_simulations) >= self.max_concurrent:  # 3 小时
+            self.logger.info(
+                f"sim_queue_update_time exceeds 3 hours (diff: {time_diff:.2f} seconds), and max concurrent simulations reached ({self.max_concurrent}). Resetting active simulations.")
+            self.session = self.sign_in(self.username, self.password)
+            self.active_simulations.clear()
+            self.logger.info("Active simulations cleared after re-signing in.")
+
         count = 0
         if len(self.active_simulations) == 0:
             self.logger.info("No one is in active simulation now")
             return None
 
         output_file = os.path.join(self.data_dir, self.FILE_CONFIG["output_file"])
-
+        self.session = self.sign_in(self.username, self.password)
         for sim_url in self.active_simulations[:]:
             sim_progress = self.check_simulation_progress(sim_url)
             if sim_progress is None:
