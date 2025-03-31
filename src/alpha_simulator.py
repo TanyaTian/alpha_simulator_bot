@@ -299,7 +299,7 @@ class AlphaSimulator:
 
         current_time = time.time()
         time_diff = current_time - self.active_update_time
-        if time_diff > 3600 and len(self.active_simulations) >= self.max_concurrent:  # 1 小时
+        if time_diff > 3600 and len(self.active_simulations) > 0:  # 1 小时
             self.logger.info(
                 f"active_update_time exceeds 1 hours (diff: {time_diff:.2f} seconds), and max concurrent simulations reached ({self.max_concurrent}). Resetting active simulations.")
             self.session = self.sign_in(self.username, self.password)
