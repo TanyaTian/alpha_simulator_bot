@@ -57,7 +57,7 @@ def main():
     data_dir = os.path.join(project_root, 'data')
     output_dir = os.path.join(project_root, 'output')
     # 实例化 ProcessSimulatedAlphas 并启动调度
-    processor = ProcessSimulatedAlphas(data_dir, output_dir, 1.25, 1.0, username, password)
+    processor = ProcessSimulatedAlphas(data_dir, output_dir, 1.58, 1.0, username, password)
     processor.start_schedule()
 
     # 启动模拟管理
