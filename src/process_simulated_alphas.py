@@ -210,28 +210,28 @@ class ProcessSimulatedAlphas:
         logger.info(f"Processed {total} alphaIds, {len(gold_bag)} successful.")
         return gold_bag
 
-def get_check_submission(s, alpha_id):
-    while True:
-        result = s.get("https://api.worldquantbrain.com/alphas/" + alpha_id + "/check")
-        if "retry-after" in result.headers:
-            time.sleep(float(result.headers["Retry-After"]))
-        else:
-            break
-    try:
-        if result.json().get("is", 0) == 0:
-            print("logged out")
-            return "sleep"
-        checks_df = pd.DataFrame(
-                result.json()["is"]["checks"]
-        )
-        pc = checks_df[checks_df.name == "PROD_CORRELATION"]["value"].values[0]
-        if not any(checks_df["result"] == "FAIL"):
-            return pc
-        else:
-            return "fail"
-    except:
-        print("catch: %s"%(alpha_id))
-        return "error"
+    def get_check_submission(s, alpha_id):
+        while True:
+            result = s.get("https://api.worldquantbrain.com/alphas/" + alpha_id + "/check")
+            if "retry-after" in result.headers:
+                time.sleep(float(result.headers["Retry-After"]))
+            else:
+                break
+        try:
+            if result.json().get("is", 0) == 0:
+                print("logged out")
+                return "sleep"
+            checks_df = pd.DataFrame(
+                    result.json()["is"]["checks"]
+            )
+            pc = checks_df[checks_df.name == "PROD_CORRELATION"]["value"].values[0]
+            if not any(checks_df["result"] == "FAIL"):
+                return pc
+            else:
+                return "fail"
+        except:
+            print("catch: %s"%(alpha_id))
+            return "error"
 
     def save_gold_bag(self, gold_bag, date_str):
         """保存 gold_bag 到 CSV 文件，若文件存在则追加，若不存在则新建"""
