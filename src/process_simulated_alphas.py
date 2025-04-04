@@ -210,32 +210,28 @@ class ProcessSimulatedAlphas:
         logger.info(f"Processed {total} alphaIds, {len(gold_bag)} successful.")
         return gold_bag
 
-    def get_check_submission(self, s, alpha_id):
-        """获取 alpha 的检查提交结果"""
-        while True:
-            try:
-                result = s.get(f"https://api.worldquantbrain.com/alphas/{alpha_id}/check")
-                if "retry-after" in result.headers:
-                    time.sleep(float(result.headers["Retry-After"]))
-                else:
-                    break
-            except Exception as e:
-                self.logger.error(f"Failed to get check result for alphaId {alpha_id}: {e}")
-                return "error"
-        try:
-            if result.json().get("is", 0) == 0:
-                self.logger.warning(f"alphaId {alpha_id} not logged in, returning 'sleep'.")
-                return "sleep"
-            checks_df = pd.DataFrame(result.json()["is"]["checks"])
-            pc = checks_df[checks_df.name == "SELF_CORRELATION"]["value"].values[0]
-            if not any(checks_df["result"] == "FAIL"):
-                return pc
-            else:
-                self.logger.info(f"alphaId {alpha_id} failed checks.")
-                return "fail"
-        except Exception as e:
-            self.logger.error(f"Error processing check result for alphaId {alpha_id}: {e}")
-            return "error"
+def get_check_submission(s, alpha_id):
+    while True:
+        result = s.get("https://api.worldquantbrain.com/alphas/" + alpha_id + "/check")
+        if "retry-after" in result.headers:
+            time.sleep(float(result.headers["Retry-After"]))
+        else:
+            break
+    try:
+        if result.json().get("is", 0) == 0:
+            print("logged out")
+            return "sleep"
+        checks_df = pd.DataFrame(
+                result.json()["is"]["checks"]
+        )
+        pc = checks_df[checks_df.name == "PROD_CORRELATION"]["value"].values[0]
+        if not any(checks_df["result"] == "FAIL"):
+            return pc
+        else:
+            return "fail"
+    except:
+        print("catch: %s"%(alpha_id))
+        return "error"
 
     def save_gold_bag(self, gold_bag, date_str):
         """保存 gold_bag 到 CSV 文件，若文件存在则追加，若不存在则新建"""
