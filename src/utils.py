@@ -32,13 +32,13 @@ def write_csv(df, file_path):
 
 def load_config(config_file="config/config.ini"):
     """
-    从配置文件读取 username、password、max_concurrent 和 batch_number_for_every_queue。
+    从配置文件读取 username、password、max_concurrent 和 batch_number_for_every_queue, batch_size。
 
     Args:
         config_file (str): 配置文件路径，默认为 "config/config.ini"。
 
     Returns:
-        dict: 包含 username, password, max_concurrent, batch_number_for_every_queue 的字典，
+        dict: 包含 username, password, max_concurrent, batch_number_for_every_queue, batch_size 的字典，
               如果读取失败则返回 None。
     """
     script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -58,7 +58,8 @@ def load_config(config_file="config/config.ini"):
             'username': config.get('Credentials', 'username'),
             'password': config.get('Credentials', 'password'),
             'max_concurrent': config.getint('Credentials', 'max_concurrent'),
-            'batch_number_for_every_queue': config.getint('Credentials', 'batch_number_for_every_queue')
+            'batch_number_for_every_queue': config.getint('Credentials', 'batch_number_for_every_queue'),
+            'batch_size':config.getint('Credentials', 'batch_size')
         }
 
         # 日志记录参数值，方便调试

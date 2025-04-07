@@ -20,11 +20,11 @@ def main():
     if config is None:
         logger.error("Failed to load configuration. Exiting...")
         return
-
     username = config['username']
     password = config['password']
     max_concurrent = config['max_concurrent']
     batch_number_for_every_queue = config['batch_number_for_every_queue']
+    batch_size = config['batch_size']
     if not all([username, password, max_concurrent, batch_number_for_every_queue]):
         logger.error("One or more config parameters are missing or invalid. Exiting...")
         return
@@ -35,7 +35,8 @@ def main():
             max_concurrent=max_concurrent,
             username=username,
             password=password,
-            batch_number_for_every_queue=batch_number_for_every_queue
+            batch_number_for_every_queue=batch_number_for_every_queue,
+            batch_size=batch_size
         )
         logger.info("AlphaSimulator initialized successfully.")
     except FileNotFoundError as e:
