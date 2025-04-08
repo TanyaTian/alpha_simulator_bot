@@ -1,5 +1,3 @@
 config/config.ini
 __pycache__/
 logs/
-data/
-data/alpha_list_pending_simulated.csv
