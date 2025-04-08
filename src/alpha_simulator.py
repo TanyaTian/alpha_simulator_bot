@@ -334,6 +334,7 @@ class AlphaSimulator:
     def load_new_alpha_and_simulate(self):
         """
         加载并模拟新的 alpha，每次从队列中弹出 self.batch_size 个 alpha 进行批量模拟。
+        确保 alpha_list 中的所有 alpha 具有相同的 'region' 和 'universe' 设置。
 
         Attributes:
             self.sim_queue_ls (list): 包含 alpha 数据的队列，每个元素是一个字典，包含 type、settings 和 regular 字段
@@ -361,11 +362,48 @@ class AlphaSimulator:
 
         self.logger.info('Loading new alphas for simulation...')
         try:
-            # 每次从队列中弹出 self.batch_size 个 alpha（如果不足 self.batch_size 个，则弹出所有剩余的）
+            # 每次从队列中弹出 alpha，组成 alpha_list
             alpha_list = []
-            for _ in range(min(self.batch_size, len(self.sim_queue_ls))):
-                alpha = self.sim_queue_ls.pop(0)
-                alpha_list.append(alpha)
+
+            # 如果队列为空，直接返回
+            if not self.sim_queue_ls:
+                self.logger.info("No alphas available in the queue.")
+                return
+
+            # 弹出第一个 alpha，设置基准 region 和 universe
+            first_alpha = self.sim_queue_ls.pop(0)
+            alpha_list.append(first_alpha)
+            base_region = first_alpha['settings'].get('region')
+            base_universe = first_alpha['settings'].get('universe')
+
+            # 验证第一个 alpha 的 region 和 universe 是否存在
+            if base_region is None or base_universe is None:
+                self.logger.error(f"First alpha missing 'region' or 'universe': {first_alpha}")
+                return
+
+            self.logger.info(f"Base region: {base_region}, Base universe: {base_universe}")
+
+            # 继续弹出 alpha，直到达到 batch_size 或遇到不一致的 region/universe
+            while len(alpha_list) < self.batch_size and self.sim_queue_ls:
+                # 检查下一个 alpha 的 region 和 universe
+                next_alpha = self.sim_queue_ls[0]  # 查看但不弹出
+                next_region = next_alpha['settings'].get('region')
+                next_universe = next_alpha['settings'].get('universe')
+
+                # 验证 region 和 universe 是否存在
+                if next_region is None or next_universe is None:
+                    self.logger.error(f"Alpha missing 'region' or 'universe': {next_alpha}")
+                    self.sim_queue_ls.pop(0)  # 移除无效 alpha
+                    continue
+
+                # 检查是否与基准一致
+                if next_region != base_region or next_universe != base_universe:
+                    self.logger.info(
+                        f"Region/Universe mismatch: {next_region}/{next_universe} does not match base {base_region}/{base_universe}. Stopping batch.")
+                    break
+
+                # 如果一致，弹出并添加到 alpha_list
+                alpha_list.append(self.sim_queue_ls.pop(0))
 
             # 如果成功弹出 alpha 列表，执行模拟
             if alpha_list:
@@ -377,7 +415,7 @@ class AlphaSimulator:
 
                 # 调用 simulate_alpha，传入 alpha 列表
                 location_url = self.simulate_alpha(alpha_list)
-                
+
                 # 如果模拟成功（返回 location_url），将 URL 添加到 active_simulations
                 if location_url:
                     self.active_simulations.append(location_url)
