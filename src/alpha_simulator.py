@@ -465,7 +465,6 @@ class AlphaSimulator:
             status = progress_data.get("status")
             if status != "COMPLETE":
                 self.logger.info(f"Simulation batch status: {status}. Not complete yet.")
-                return None
 
             # 存储所有 alpha 详情
             alpha_details_list = []
@@ -496,8 +495,9 @@ class AlphaSimulator:
                 except requests.exceptions.RequestException as e:
                     self.logger.error(f"Error fetching child {child} progress or alpha details: {e}")
                     continue  # 跳过失败的 child，继续处理下一个
-
-            return alpha_details_list if alpha_details_list else None
+            if len(alpha_details_list) == 0:
+                self.logger.info(f"Simulation batch status: {status}. alpha_details_list is empty.")
+            return alpha_details_list
 
         except requests.exceptions.RequestException as e:
             self.logger.error(f"Error fetching simulation progress: {e}")
