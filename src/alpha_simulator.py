@@ -171,14 +171,94 @@ class AlphaSimulator:
         self.logger.info("Login to BRAIN successfully.")
         return s
 
+    def manage_input_files(self):
+        """管理输入文件，当主文件为空时切换到下一个编号的文件"""
+        base_name = self.FILE_CONFIG["input_file"].replace('.csv', '')
+        current_file = self.alpha_list_file_path
+        
+        # 检查当前文件是否为空（只有表头或完全为空）
+        try:
+            with open(current_file, 'r') as f:
+                reader = csv.reader(f)
+                header = next(reader, None)  # 读取表头
+                if header is None:  # 完全空文件
+                    self.logger.info("Current input file is completely empty")
+                else:
+                    first_data_row = next(reader, None)  # 尝试读取第一行数据
+                    if first_data_row is not None:  # 有数据行
+                        return False  # 文件不为空，不需要切换
+                    self.logger.info("Current input file has only header but no data")
+        except FileNotFoundError:
+            self.logger.info("Current input file not found")
+            pass  # 文件不存在，继续执行下面的逻辑
+        
+        # 查找下一个可用的文件
+        for i in range(1, 20):
+            next_file = os.path.join(self.data_dir, f"{base_name}_{i}.csv")
+            if os.path.exists(next_file):
+                # 检查目标文件是否为空（只有表头）
+                with open(next_file, 'r') as f:
+                    reader = csv.reader(f)
+                    header = next(reader, None)
+                    if header is None:  # 完全空文件
+                        self.logger.info(f"Found {base_name}_{i}.csv but it's completely empty")
+                        continue
+                    first_data_row = next(reader, None)
+                    if first_data_row is None:  # 只有表头
+                        self.logger.info(f"Found {base_name}_{i}.csv but it has only header")
+                        continue
+                
+                try:
+                    # 删除当前空文件
+                    if os.path.exists(current_file):
+                        os.remove(current_file)
+                    # 重命名下一个文件为当前文件
+                    os.rename(next_file, current_file)
+                    self.logger.info(f"Switched input file to {base_name}_{i}.csv")
+                    return True
+                except OSError as e:
+                    self.logger.error(f"Error switching input files: {e}")
+                    return False
+        
+        # 没有找到可用的下一个文件
+        self.logger.info("No more valid input files available")
+        return False
+
     def read_alphas_from_csv_in_batches(self, batch_size=50):
         """从CSV文件中分批读取alphas"""
         alphas = []
         temp_file_name = self.alpha_list_file_path + '.tmp'
 
+        # 检查并管理输入文件
+        if not os.path.exists(self.alpha_list_file_path):
+            if not self.manage_input_files():
+                return alphas  # 没有更多文件可用，返回空列表
+        else:
+            # 检查文件是否只有表头
+            with open(self.alpha_list_file_path, 'r') as f:
+                reader = csv.reader(f)
+                header = next(reader, None)
+                if header is None:  # 完全空文件
+                    if not self.manage_input_files():
+                        return alphas
+                else:
+                    first_data_row = next(reader, None)
+                    if first_data_row is None:  # 只有表头
+                        if not self.manage_input_files():
+                            return alphas
+
         with open(self.alpha_list_file_path, 'r') as file, open(temp_file_name, 'w', newline='') as temp_file:
             reader = csv.DictReader(file)
             fieldnames = reader.fieldnames
+            if fieldnames is None:  # 完全空文件情况
+                return alphas
+                
+            # 确保表头包含预期字段
+            expected_fields = {'type', 'settings', 'regular'}
+            if not expected_fields.issubset(set(fieldnames)):
+                self.logger.error(f"Input file missing required fields. Expected: {expected_fields}, found: {fieldnames}")
+                return alphas
+                
             writer = csv.DictWriter(temp_file, fieldnames=fieldnames)
             writer.writeheader()
 
@@ -190,9 +270,9 @@ class AlphaSimulator:
                             try:
                                 row['settings'] = ast.literal_eval(row['settings'])
                             except (ValueError, SyntaxError):
-                                print(f"Error evaluating settings: {row['settings']}")
+                                self.logger.error(f"Error evaluating settings: {row['settings']}")
                         elif not isinstance(row['settings'], dict):
-                            print(f"Unexpected type for settings: {type(row['settings'])}")
+                            self.logger.error(f"Unexpected type for settings: {type(row['settings'])}")
                     alphas.append(row)
                 except StopIteration:
                     break
@@ -203,7 +283,7 @@ class AlphaSimulator:
         try:
             os.replace(temp_file_name, self.alpha_list_file_path)
         except OSError as e:
-            if e.winerror == 5:  # 拒绝访问
+            if hasattr(e, 'winerror') and e.winerror == 5:  # 拒绝访问
                 self.logger.error("Access denied when replacing file. Trying to delete original and rename temporary.")
                 try:
                     os.remove(self.alpha_list_file_path)
@@ -221,7 +301,6 @@ class AlphaSimulator:
                     writer.writeheader()
                 writer.writerows(alphas)
         return alphas
-
     def simulate_alpha(self, alpha_list):
         """
         模拟一组 alpha 表达式，通过 API 提交批量模拟请求（同步版本）。
