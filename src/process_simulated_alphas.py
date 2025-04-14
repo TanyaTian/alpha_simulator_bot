@@ -240,7 +240,7 @@ class ProcessSimulatedAlphas:
                     logger.error("Invalid session, skipping current iteration.")
                     continue
             logger.info(f"Progress: {idx} checked, {total - idx} remaining.")
-            print(self.get_check_submission.__code__.co_varnames)
+            
             pc = self.get_check_submission(self.session, alpha_id)
             if pc == "sleep":
                 logger.warning(f"alphaId {alpha_id} requires cooldown, re-queuing.")
@@ -348,7 +348,7 @@ class ProcessSimulatedAlphas:
         threading.Thread(target=run_schedule, daemon=True).start()
         self.logger.info("Daily scheduler started, will run at 04:30 every day.")
 
-
+"""
 data_dir = "./data"
 output_dir = "./output"
 specified_sharpe = 1.2
@@ -357,4 +357,5 @@ username = "tianyuan411249897@gmail.com"
 password = "k9979kui8"
 processor = ProcessSimulatedAlphas(data_dir, output_dir, specified_sharpe, specified_fitness, username, password)
 processor.run()
+"""
 
