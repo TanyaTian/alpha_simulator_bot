@@ -82,4 +82,4 @@ file_a_path = os.path.join('/Users/sujianan/py/alpha_simulator_bot/data', 'alpha
 file_b_path = os.path.join('/Users/sujianan/py/consultant/consultant/output', 'alpha_list_pending_simulated.csv')
 
 # 合并文件
-merge_csv_files(file_a_path, file_b_path, 'append')
+merge_csv_files(file_a_path, file_b_path, 'prepend')
