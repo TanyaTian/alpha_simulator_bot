@@ -240,7 +240,6 @@ class ProcessSimulatedAlphas:
                     logger.error("Invalid session, skipping current iteration.")
                     continue
             logger.info(f"Progress: {idx} checked, {total - idx} remaining.")
-            
             pc = self.get_check_submission(self.session, alpha_id)
             if pc == "sleep":
                 logger.warning(f"alphaId {alpha_id} requires cooldown, re-queuing.")
