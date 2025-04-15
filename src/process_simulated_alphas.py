@@ -200,7 +200,7 @@ class ProcessSimulatedAlphas:
                         filtered_rows.append(row)  # 保存完整行
                         logger.info(f"alphaId {alpha_id} meets criteria: sharpe={sharpe}, fitness={fitness}")
                 except (SyntaxError, ValueError) as e:
-                    logger.error(f"Error parsing metrics for alphaId {alpha_id}: {e}, raw data: {row[metrics_index]}")
+                    logger.error(f"Error parsing metrics for alphaId {alpha_id}: {e}, raw data: {row[18]}")
                     continue
                 except IndexError as e:
                     logger.error(f"Index error for alphaId {alpha_id}: {e}, row: {row}")
@@ -340,8 +340,8 @@ class ProcessSimulatedAlphas:
         logger.info(f"Processing completed for {date_str}, all alpha IDs processed.")
 
     def start_schedule(self):
-        """启动每日调度任务，每天 05:30 执行"""
-        schedule.every().day.at("05:30").do(self.run)
+        """启动每日调度任务，每天 06:15 执行"""
+        schedule.every().day.at("06:15").do(self.run)
 
         def run_schedule():
             while True:
