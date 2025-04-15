@@ -275,8 +275,8 @@ class ProcessSimulatedAlphas:
         logger.info(f"Processing completed for {date_str}, all alpha IDs processed.")
 
     def start_schedule(self):
-        """启动每日调度任务，每天 04:30 执行"""
-        schedule.every().day.at("04:30").do(self.run)
+        """启动每日调度任务，每天 00:30 执行"""
+        schedule.every().day.at("00:30").do(self.run)
 
         def run_schedule():
             while True:
@@ -296,6 +296,7 @@ password = "k9979kui8"
 processor = ProcessSimulatedAlphas(data_dir, output_dir, specified_sharpe, specified_fitness, username, password)
 processor.run()
 """
+
 
 
 
