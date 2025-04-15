@@ -78,7 +78,7 @@ def merge_csv_files(file_a_path, file_b_path, mode='prepend'):
         raise RuntimeError(f"文件合并失败：{e}")
 
 # 文件路径
-file_a_path = os.path.join('/Users/sujianan/py/alpha_simulator_bot/data', 'alpha_list_pending_simulated_1.csv')
+file_a_path = os.path.join('/Users/sujianan/py/alpha_simulator_bot/data', 'alpha_list_pending_simulated.csv')
 file_b_path = os.path.join('/Users/sujianan/py/consultant/consultant/output', 'alpha_list_pending_simulated.csv')
 
 # 合并文件

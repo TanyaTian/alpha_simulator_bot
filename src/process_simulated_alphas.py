@@ -270,15 +270,19 @@ class ProcessSimulatedAlphas:
             else:
                 break
         try:
-            if result.json().get("is", 0) == 0:
+            result_json = result.json()
+            if result_json.get("is", 0) == 0:
                 return "sleep"
-            checks_df = pd.DataFrame(
-                    result.json()["is"]["checks"]
-            )
+
+            checks_df = pd.DataFrame(result_json["is"]["checks"])
             pc = checks_df[checks_df.name == "PROD_CORRELATION"]["value"].values[0]
+
+            failed_checks = checks_df[checks_df["result"] == "FAIL"]
             if not any(checks_df["result"] == "FAIL"):
                 return pc
             else:
+                logger.info(f"alphaId {alpha_id} check failed, skipping.")
+                logger.info(f"Fail reasons:\n{failed_checks.to_string(index=False)}")
                 return "fail"
         except:
             return "error"
@@ -336,8 +340,8 @@ class ProcessSimulatedAlphas:
         logger.info(f"Processing completed for {date_str}, all alpha IDs processed.")
 
     def start_schedule(self):
-        """启动每日调度任务，每天 04:30 执行"""
-        schedule.every().day.at("04:30").do(self.run)
+        """启动每日调度任务，每天 05:30 执行"""
+        schedule.every().day.at("05:30").do(self.run)
 
         def run_schedule():
             while True:
