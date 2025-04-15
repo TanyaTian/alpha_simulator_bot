@@ -46,70 +46,6 @@ class ProcessSimulatedAlphas:
         self.logger.info("Successfully logged in to BRAIN platform.")
         return s
 
-    def load_alpha_ids_batch(self, date_str, batch_size):
-        """从 filtered_alpha_ids.{date_str}.csv 文件中加载指定数量的 alphaId，更新文件"""
-        # 构造文件路径
-        alpha_ids_file = os.path.join(self.output_dir, f'filtered_alpha_ids.{date_str}.csv')
-        if not os.path.exists(alpha_ids_file):
-            logger.error(f"File {alpha_ids_file} not found.")
-            return []
-
-        # 读取所有 alpha ID
-        all_alpha_ids = []
-        with open(alpha_ids_file, 'r', encoding='utf-8') as file:
-            reader = csv.reader(file)
-            try:
-                header = next(reader)  # 跳过表头
-                if header != ['alpha_id']:
-                    logger.error(f"Invalid header in {alpha_ids_file}: {header}")
-                    return []
-            except StopIteration:
-                logger.info(f"File {alpha_ids_file} is empty.")
-                return []
-
-            for row in reader:
-                if not row or len(row) < 1:
-                    logger.warning(f"Skipping invalid row in {alpha_ids_file}: {row}")
-                    continue
-                all_alpha_ids.append(row[0])
-
-        # 确定加载数量
-        load_count = min(batch_size, len(all_alpha_ids))
-        loaded_alpha_ids = all_alpha_ids[:load_count]
-        remaining_alpha_ids = all_alpha_ids[load_count:]
-
-        # 如果剩余 alpha ID 为空，直接删除文件
-        if not remaining_alpha_ids:
-            try:
-                os.remove(alpha_ids_file)
-                logger.info(f"No remaining alpha IDs, deleted {alpha_ids_file}.")
-            except Exception as e:
-                logger.error(f"Error deleting {alpha_ids_file}: {e}")
-                raise
-        else:
-            # 写入剩余 alpha ID 到临时文件 temp_alpha_ids.{date_str}.csv
-            temp_file = os.path.join(self.output_dir, f'temp_alpha_ids.{date_str}.csv')
-            try:
-                with open(temp_file, 'w', newline='', encoding='utf-8') as file:
-                    writer = csv.writer(file)
-                    writer.writerow(['alpha_id'])  # 写入表头
-                    for alpha_id in remaining_alpha_ids:
-                        writer.writerow([alpha_id])
-                logger.info(f"Wrote {len(remaining_alpha_ids)} remaining alpha IDs to temporary file {temp_file}")
-
-                # 删除原文件并重命名临时文件
-                os.remove(alpha_ids_file)
-                os.rename(temp_file, alpha_ids_file)
-                logger.info(f"Replaced {alpha_ids_file} with updated alpha IDs, {len(remaining_alpha_ids)} remaining.")
-            except Exception as e:
-                logger.error(f"Error updating {alpha_ids_file}: {e}")
-                if os.path.exists(temp_file):
-                    os.remove(temp_file)
-                raise
-
-        logger.info(f"Loaded {len(loaded_alpha_ids)} alpha IDs from {alpha_ids_file}")
-        return loaded_alpha_ids
-
     def get_yesterday_date(self):
         """获取前一天的日期，格式为 YYYY-MM-DD"""
         return (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
@@ -224,7 +160,7 @@ class ProcessSimulatedAlphas:
         # 调用 save_stone_bag 保存完整行，传入表头
         self.save_stone_bag(filtered_rows, date_str, header=header)
 
-    def process_alpha_ids(self, alpha_ids):
+    def process_alpha_ids(self, alpha_ids, date_str):
         """Processing alpha IDs and returning gold_bag"""
         gold_bag = []
         total = len(alpha_ids)
@@ -233,22 +169,26 @@ class ProcessSimulatedAlphas:
             return gold_bag
 
         logger.info(f"Start checking {total} alphaIds...")
-        for idx, alpha_id in enumerate(alpha_ids):
+        idx = 0
+        while alpha_ids:
+            alpha_id = alpha_ids.pop(0)
+            idx += 1
             if idx % 200 == 0:
                 self.session = self.sign_in(self.username, self.password)
+                logger.info(f"Progress: {total - len(alpha_ids)}/{total} processed.")
                 if not self.session:
                     logger.error("Invalid session, skipping current iteration.")
                     continue
-            logger.info(f"Progress: {idx} checked, {total - idx} remaining.")
+            logger.info(f"Progress: {idx} checked, {len(alpha_ids)} remaining.")
             pc = self.get_check_submission(self.session, alpha_id)
             if pc == "sleep":
                 logger.warning(f"alphaId {alpha_id} requires cooldown, re-queuing.")
-                time.sleep(100)
+                time.sleep(60)
                 self.session = self.sign_in(self.username, self.password)
                 alpha_ids.append(alpha_id)
             elif pc != pc:  # NaN check
-                logger.warning(f"Self-correlation check failed for alphaId {alpha_id}, re-queuing.")
-                time.sleep(100)
+                logger.warning(f"prod-correlation check failed for alphaId {alpha_id}, re-queuing.")
+                time.sleep(60)
                 alpha_ids.append(alpha_id)
             elif pc == "fail":
                 logger.info(f"alphaId {alpha_id} check failed, skipping.")
@@ -259,6 +199,7 @@ class ProcessSimulatedAlphas:
             else:
                 logger.info(f"alphaId {alpha_id} check successful, added to gold_bag.")
                 gold_bag.append((alpha_id, pc))
+                self.save_gold_bag([(alpha_id, pc)], date_str)
         logger.info(f"Processed {total} alphaIds, {len(gold_bag)} successful.")
         return gold_bag
 
@@ -316,32 +257,26 @@ class ProcessSimulatedAlphas:
         # 筛选并保存符合条件的 alpha ID 到 filtered_alpha_ids.{date_str}.csv
         self.read_and_filter_alpha_ids(date_str)
 
-        # 定义批处理大小
-        batch_size = 5  # 可根据需求调整
         alpha_ids_file = os.path.join(self.output_dir, f'filtered_alpha_ids.{date_str}.csv')
+        if not os.path.exists(alpha_ids_file):
+                logger.info(f"No filtered alpha ID file found for {date_str}, skipping run.")
+                return
 
-        # 循环处理，直到 filtered_alpha_ids.{date_str}.csv 不存在
-        while os.path.exists(alpha_ids_file):
-            # 加载一批 alpha ID
-            loaded_alpha_ids = self.load_alpha_ids_batch(date_str, batch_size)
-            if not loaded_alpha_ids:
-                logger.info("No more alpha IDs to process, task completed.")
-                break
-            # 处理加载的 alpha ID
-            gold_bag = self.process_alpha_ids(loaded_alpha_ids)
-            if gold_bag:
-                # 保存 gold_bag，追加到文件
-                self.save_gold_bag(gold_bag, date_str)
-                logger.info(
-                    f"Processed batch of {len(loaded_alpha_ids)} alpha IDs, saved {len(gold_bag)} to gold_bag.csv.{date_str}")
-            else:
-                logger.info(f"Processed batch of {len(loaded_alpha_ids)} alpha IDs, no successful results.")
+        alpha_ids = []
+        with open(alpha_ids_file, 'r', encoding='utf-8') as file:
+            reader = csv.reader(file)
+            next(reader)  # 跳过表头
+            for row in reader:
+                if row:
+                    alpha_ids.append(row[0])
 
+        # 步骤 3：处理 alpha ID，并在成功时立即写入 gold_bag.csv
+        self.process_alpha_ids(alpha_ids, date_str)
         logger.info(f"Processing completed for {date_str}, all alpha IDs processed.")
 
     def start_schedule(self):
-        """启动每日调度任务，每天 06:15 执行"""
-        schedule.every().day.at("06:15").do(self.run)
+        """启动每日调度任务，每天 04:30 执行"""
+        schedule.every().day.at("04:30").do(self.run)
 
         def run_schedule():
             while True:
@@ -354,11 +289,13 @@ class ProcessSimulatedAlphas:
 """
 data_dir = "./data"
 output_dir = "./output"
-specified_sharpe = 1.2
-specified_fitness = 0.8
+specified_sharpe = 1.58
+specified_fitness = 1.0
 username = "tianyuan411249897@gmail.com"
 password = "k9979kui8"
 processor = ProcessSimulatedAlphas(data_dir, output_dir, specified_sharpe, specified_fitness, username, password)
 processor.run()
 """
+
+
 
