@@ -337,7 +337,7 @@ class ProcessSimulatedAlphas:
         self.logger.info("==== 启动处理循环 ====")
         self.process_alpha_ids_loop()
 
-
+"""
 data_dir = "./data"
 output_dir = "./output"
 specified_sharpe = 1.58
@@ -346,7 +346,7 @@ username = "tianyuan411249897@gmail.com"
 password = "k9979kui8"
 processor = ProcessSimulatedAlphas(data_dir, output_dir, specified_sharpe, specified_fitness, username, password)
 processor.manage_process()
-
+"""
 
 
 
