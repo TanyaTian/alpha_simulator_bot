@@ -334,8 +334,9 @@ class ProcessSimulatedAlphas:
         self.logger.info("==== 启动定时任务 ====")
         self.start_daily_schedule()
 
-        self.logger.info("==== 启动处理循环 ====")
-        self.process_alpha_ids_loop()
+        self.logger.info("==== 启动处理循环（子线程） ====")
+        self.process_thread = threading.Thread(target=self.process_alpha_ids_loop, daemon=True)
+        self.process_thread.start()
 
 """
 data_dir = "./data"
