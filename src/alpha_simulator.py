@@ -517,94 +517,130 @@ class AlphaSimulator:
         except Exception as e:
             # 捕获其他异常，记录错误信息
             self.logger.error(f"Error during simulation: {e}")
-
-    
     
     def check_simulation_progress(self, simulation_progress_url):
         """
-        检查批量模拟的进度，获取children。
+        检查批量模拟的进度，获取 children 列表。
 
         Args:
             simulation_progress_url (str): 批量模拟的进度 URL，例如 "https://api.worldquantbrain.com/simulations/12345"
 
         Returns:
-            children or None: 如果失败，返回 None
+            list or None: 如果成功返回 children 列表，否则返回 None
         """
         try:
-            # 请求批量模拟的进度
+            self.logger.info(f"Requesting simulation progress from: {simulation_progress_url}")
             simulation_progress = self.session.get(simulation_progress_url)
             simulation_progress.raise_for_status()
 
-            # 检查是否有 Retry-After 头，如果存在，表示需要稍后重试
+            # 检查是否包含 Retry-After 头，表示服务端暂时不可用
             if simulation_progress.headers.get("Retry-After", 0) != 0:
+                self.logger.warning("Retry-After detected. Will retry later.")
                 return None
 
-            # 解析响应，获取 children 列表
+            # 解析响应，提取 children 和状态
             progress_data = simulation_progress.json()
             children = progress_data.get("children", [])
             if not children:
-                self.logger.error("No children found in simulation progress response")
+                self.logger.error("No children found in simulation progress response.")
                 return None
 
-            # 检查批量模拟状态
             status = progress_data.get("status")
+            self.logger.info(f"Simulation batch status: {status}, children count: {len(children)}")
+
             if status != "COMPLETE":
-                self.logger.info(f"Simulation batch status: {status}. Not complete yet.")
-            
+                self.logger.info("Simulation not complete. Will check again later.")
+
             return children
+
         except requests.exceptions.RequestException as e:
-            self.logger.error(f"Error fetching simulation progress: {e}")
+            self.logger.error(f"Failed to fetch simulation progress: {e}")
             self.session = self.sign_in(self.username, self.password)
             return None
-    
+
+
     def process_children_async(self, children):
-        """将处理任务放入队列中，由 worker 顺序执行"""
+        """
+        将处理 children 的任务异步放入队列，由后台 worker 串行处理。
+
+        Args:
+            children (list): 子模拟 ID 列表
+        """
+        self.logger.info(f"Enqueuing task for {len(children)} children.")
         self.task_queue.put(children)
-    
+
+
     def process_children(self, children):
+        """
+        同步处理 children，依次获取每个 child 的 alphaId，再获取 alpha detail，并写入文件。
+
+        Args:
+            children (list): 子模拟 ID 列表
+        """
+        self.logger.info(f"Processing {len(children)} children...")
         brain_api_url = "https://api.worldquantbrain.com"
         alpha_details_list = []
 
         for child in children:
             try:
+                # 获取子模拟进度，提取 alpha_id
+                self.logger.debug(f"Fetching child simulation progress: {child}")
                 child_progress = self.session.get(f"{brain_api_url}/simulations/{child}")
                 child_progress.raise_for_status()
                 child_data = child_progress.json()
+
                 alpha_id = child_data.get("alpha")
                 if not alpha_id:
-                    self.logger.error(f"No alpha_id found for child: {child}")
+                    self.logger.warning(f"No alpha_id found for child: {child}")
                     continue
 
+                # 使用 alpha_id 获取 alpha 详情
+                self.logger.debug(f"Fetching alpha detail: {alpha_id}")
                 alpha_response = self.session.get(f"{brain_api_url}/alphas/{alpha_id}")
                 alpha_response.raise_for_status()
                 alpha_details = alpha_response.json()
                 alpha_details_list.append(alpha_details)
 
             except requests.exceptions.RequestException as e:
-                self.logger.error(f"Error fetching child {child} or alpha details: {e}")
+                self.logger.error(f"Error fetching child {child} or alpha detail: {e}")
                 continue
 
+        # 写入所有 alpha detail 到文件中
         if alpha_details_list:
             output_file = os.path.join(self.data_dir, self.FILE_CONFIG["output_file"])
-            with self.lock:  # ✅ 使用锁保护文件写入
-                with open(output_file, 'a', newline='') as file:
-                    writer = csv.DictWriter(file, fieldnames=alpha_details_list[0].keys())
-                    if os.stat(output_file).st_size == 0:
-                        writer.writeheader()
-                    for alpha_details in alpha_details_list:
-                        writer.writerow(alpha_details)
+            try:
+                with self.lock:  # 使用锁，确保文件写入时线程安全
+                    self.logger.info(f"Writing {len(alpha_details_list)} alpha details to file: {output_file}")
+                    with open(output_file, 'a', newline='') as file:
+                        writer = csv.DictWriter(file, fieldnames=alpha_details_list[0].keys())
+                        if os.stat(output_file).st_size == 0:
+                            writer.writeheader()
+                        for alpha_details in alpha_details_list:
+                            writer.writerow(alpha_details)
+            except Exception as e:
+                self.logger.error(f"Error writing to file: {e}")
         else:
-            self.logger.info("No alpha details written. Empty list.")
+            self.logger.info("No alpha details to write. List is empty.")
+
 
     def worker(self):
-        """只允许一个线程执行任务，从 children 中获取 alpha detail 并写入文件"""
+        """
+        后台子线程，从队列中顺序获取 children 列表，并处理为 alpha detail 写入文件。
+
+        由于队列机制，同一时间只会有一个线程执行该函数。
+        """
+        self.logger.info("Worker thread started. Waiting for tasks...")
         while True:
+            # 从队列中获取任务（阻塞）
             children = self.task_queue.get()
             if children is None:
-                self.logger.info("Worker thread shutting down.")
+                self.logger.info("Shutdown signal received. Worker thread exiting.")
                 self.task_queue.task_done()
                 break
+
+            self.logger.info(f"Worker received a task with {len(children)} children.")
             self.process_children(children)
+            self.logger.info("Worker finished processing current task.")
             self.task_queue.task_done()
 
     def shutdown(self):
