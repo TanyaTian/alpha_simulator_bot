@@ -120,7 +120,7 @@ class AlphaSimulator:
                 self.active_simulations = state.get("active_simulations", [])
                 self.logger.info(f"Loaded {len(self.active_simulations)} previous active simulations from state.")
 
-            while self.active_simulations and running:
+            while self.active_simulations and self.running:
                 try:
                     self.check_simulation_status()
                 except Exception as e:
