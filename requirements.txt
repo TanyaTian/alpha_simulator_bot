@@ -1,4 +1,4 @@
-pandas
-requests
-pytz
-schedule
+pandas==2.0.3
+requests==2.31.0
+pytz==2023.3
+schedule==1.2.0
