@@ -18,15 +18,6 @@ fmt = '%Y-%m-%d'
 loc_dt = datetime.now(eastern)
 print("Current time in Eastern is", loc_dt.strftime(fmt))
 
-# 全局退出标志
-running = True
-
-def signal_handler(signum, frame):
-    """处理 SIGTERM 和 SIGINT 信号"""
-    global running
-    Logger().info(f"Received signal {signum}, initiating shutdown...")
-    running = False
-
 class AlphaSimulator:
     """Alpha模拟器类，用于管理量化策略的模拟过程"""
 
@@ -50,6 +41,7 @@ class AlphaSimulator:
         # 注册信号处理
         signal.signal(signal.SIGTERM, signal_handler)
         signal.signal(signal.SIGINT, signal_handler)
+        self.running = True
 
         # 创建 Logger 实例
         self.logger = Logger()
@@ -90,6 +82,12 @@ class AlphaSimulator:
         self.worker_thread = threading.Thread(target=self.worker)
         self.worker_thread.daemon = True
         self.worker_thread.start()
+
+    def handle_exit_signal(self, signum, frame):
+        self.logger.info(f"Received shutdown signal {signum}, , initiating shutdown...")
+        self.running = False
+        self.save_state
+        self.shutdown
 
     def _validate_critical_files(self):
         """验证关键输入文件是否存在"""
@@ -529,13 +527,11 @@ class AlphaSimulator:
             list or None: 如果成功返回 children 列表，否则返回 None
         """
         try:
-            self.logger.info(f"Requesting simulation progress from: {simulation_progress_url}")
             simulation_progress = self.session.get(simulation_progress_url)
             simulation_progress.raise_for_status()
 
             # 检查是否包含 Retry-After 头，表示服务端暂时不可用
             if simulation_progress.headers.get("Retry-After", 0) != 0:
-                self.logger.warning("Retry-After detected. Will retry later.")
                 return None
 
             # 解析响应，提取 children 和状态
@@ -705,13 +701,9 @@ class AlphaSimulator:
             return
 
         try:
-            while running:
+            while self.running:
                 self.check_simulation_status()
                 self.load_new_alpha_and_simulate()
                 time.sleep(3)
         except KeyboardInterrupt:
             self.logger.info("Manual interruption detected.")
-        finally:
-            self.logger.info("Shutting down, saving state...")
-            self.save_state()
-            self.shutdown()

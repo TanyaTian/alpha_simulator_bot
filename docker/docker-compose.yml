@@ -10,4 +10,4 @@ services:
       - ../config:/config  # 新增挂载
       - ../output:/output  # 新增挂载
     command: python main.py
-    stop_grace_period: 30s  # 设置 30 秒超时
+    stop_grace_period: 60s  # 设置 60 秒超时
