@@ -83,7 +83,7 @@ class AlphaSimulator:
         self.worker_thread.daemon = True
         self.worker_thread.start()
 
-    def handle_exit_signal(self, signum, frame):
+    def signal_handler(self, signum, frame):
         self.logger.info(f"Received shutdown signal {signum}, , initiating shutdown...")
         self.running = False
         self.save_state
