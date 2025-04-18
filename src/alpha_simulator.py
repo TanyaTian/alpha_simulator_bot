@@ -427,9 +427,8 @@ class AlphaSimulator:
             self.active_update_time (float): 最近一次模拟更新的时间戳
             self.logger (Logger): 日志记录器
         """
-        global running
         # 检查运行状态，如果 running 为 False，则退出
-        if not running:
+        if not self.running:
             return
 
         # 如果队列为空，从 CSV 文件中读取新的 alpha 数据
