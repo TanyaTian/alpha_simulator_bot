@@ -289,13 +289,14 @@ class ProcessSimulatedAlphas:
         return gold_bag_file
     
     def save_unfinished_alpha_ids(self):
-        temp_path = os.path.join(self.output_dir, 'unfinished_alpha_ids.temp.csv')
-        os.makedirs(self.output_dir, exist_ok=True)
-        with open(temp_path, 'w', newline='', encoding='utf-8') as f:
-            writer = csv.writer(f)
-            for aid in self.alpha_ids:
-                writer.writerow([aid])
-        self.logger.info(f"Unfinished alpha IDs saved to {temp_path}.")
+        if self.alpha_ids:
+            temp_path = os.path.join(self.output_dir, 'unfinished_alpha_ids.temp.csv')
+            os.makedirs(self.output_dir, exist_ok=True)
+            with open(temp_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                for aid in self.alpha_ids:
+                    writer.writerow([aid])
+            self.logger.info(f"Unfinished alpha IDs saved to {temp_path}.")
 
     def start_daily_schedule(self):
         self.logger.info("Starting daily schedule...")

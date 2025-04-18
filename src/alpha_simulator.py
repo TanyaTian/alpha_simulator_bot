@@ -1,3 +1,4 @@
+import queue
 import time
 import csv
 import requests
@@ -84,6 +85,11 @@ class AlphaSimulator:
         self._load_previous_state()
 
         self.start_rotation_scheduler()  # 添加轮转调度
+        self.task_queue = queue.Queue()
+        self.lock = threading.Lock()  # 🔒 文件写入锁
+        self.worker_thread = threading.Thread(target=self.worker)
+        self.worker_thread.daemon = True
+        self.worker_thread.start()
 
     def _validate_critical_files(self):
         """验证关键输入文件是否存在"""
@@ -516,13 +522,13 @@ class AlphaSimulator:
     
     def check_simulation_progress(self, simulation_progress_url):
         """
-        检查批量模拟的进度，获取每个 child 的 alpha 详情。
+        检查批量模拟的进度，获取children。
 
         Args:
             simulation_progress_url (str): 批量模拟的进度 URL，例如 "https://api.worldquantbrain.com/simulations/12345"
 
         Returns:
-            list or None: 包含所有 alpha 详情的列表，每个元素是一个字典（alpha 详情的 JSON 数据）；如果失败，返回 None
+            children or None: 如果失败，返回 None
         """
         try:
             # 请求批量模拟的进度
@@ -544,102 +550,96 @@ class AlphaSimulator:
             status = progress_data.get("status")
             if status != "COMPLETE":
                 self.logger.info(f"Simulation batch status: {status}. Not complete yet.")
-
-            # 存储所有 alpha 详情
-            alpha_details_list = []
-            brain_api_url = "https://api.worldquantbrain.com"
-
-            # 遍历每个 child，获取 alpha_id 和 alpha 详情
-            for child in children:
-                try:
-                    # 请求 child 的模拟进度
-                    child_progress = self.session.get(f"{brain_api_url}/simulations/{child}")
-                    child_progress.raise_for_status()
-
-                    # 获取 alpha_id
-                    child_data = child_progress.json()
-                    alpha_id = child_data.get("alpha")
-                    if not alpha_id:
-                        self.logger.error(f"No alpha_id found for child: {child}")
-                        continue
-
-                    # 使用 alpha_id 请求 alpha 详情
-                    alpha_response = self.session.get(f"{brain_api_url}/alphas/{alpha_id}")
-                    alpha_response.raise_for_status()
-
-                    # 解析 alpha 详情
-                    alpha_details = alpha_response.json()
-                    alpha_details_list.append(alpha_details)
-
-                except requests.exceptions.RequestException as e:
-                    self.logger.error(f"Error fetching child {child} progress or alpha details: {e}")
-                    continue  # 跳过失败的 child，继续处理下一个
-            if len(alpha_details_list) == 0:
-                self.logger.info(f"Simulation batch status: {status}. alpha_details_list is empty.")
-            return alpha_details_list
-
+            
+            return children
         except requests.exceptions.RequestException as e:
             self.logger.error(f"Error fetching simulation progress: {e}")
             self.session = self.sign_in(self.username, self.password)
             return None
+    
+    def process_children_async(self, children):
+        """将处理任务放入队列中，由 worker 顺序执行"""
+        self.task_queue.put(children)
+    
+    def process_children(self, children):
+        brain_api_url = "https://api.worldquantbrain.com"
+        alpha_details_list = []
+
+        for child in children:
+            try:
+                child_progress = self.session.get(f"{brain_api_url}/simulations/{child}")
+                child_progress.raise_for_status()
+                child_data = child_progress.json()
+                alpha_id = child_data.get("alpha")
+                if not alpha_id:
+                    self.logger.error(f"No alpha_id found for child: {child}")
+                    continue
+
+                alpha_response = self.session.get(f"{brain_api_url}/alphas/{alpha_id}")
+                alpha_response.raise_for_status()
+                alpha_details = alpha_response.json()
+                alpha_details_list.append(alpha_details)
+
+            except requests.exceptions.RequestException as e:
+                self.logger.error(f"Error fetching child {child} or alpha details: {e}")
+                continue
+
+        if alpha_details_list:
+            output_file = os.path.join(self.data_dir, self.FILE_CONFIG["output_file"])
+            with self.lock:  # ✅ 使用锁保护文件写入
+                with open(output_file, 'a', newline='') as file:
+                    writer = csv.DictWriter(file, fieldnames=alpha_details_list[0].keys())
+                    if os.stat(output_file).st_size == 0:
+                        writer.writeheader()
+                    for alpha_details in alpha_details_list:
+                        writer.writerow(alpha_details)
+        else:
+            self.logger.info("No alpha details written. Empty list.")
+
+    def worker(self):
+        """只允许一个线程执行任务，从 children 中获取 alpha detail 并写入文件"""
+        while True:
+            children = self.task_queue.get()
+            if children is None:
+                self.logger.info("Worker thread shutting down.")
+                self.task_queue.task_done()
+                break
+            self.process_children(children)
+            self.task_queue.task_done()
+
+    def shutdown(self):
+        """
+        优雅关闭子线程。应在程序结束前调用。
+        """
+        self.logger.info("Shutting down the worker thread...")
+        self.task_queue.put(None)  # 添加关闭信号
+        self.worker_thread.join()
+        self.logger.info("Worker thread has been successfully shut down.")
 
     def check_simulation_status(self):
-        """
-        检查所有活跃模拟的状态，并将结果写入 output 文件。
-
-        Attributes:
-            self.active_simulations (list): 包含活跃模拟的 URL 列表
-            self.active_update_time (float): 最近一次模拟更新的时间戳
-            self.max_concurrent (int): 最大并发模拟数量
-            self.session (requests.Session): HTTP 会话对象
-            self.logger (Logger): 日志记录器
-            self.data_dir (str): 数据目录路径
-            self.FILE_CONFIG (dict): 文件配置
-        """
-        # 检查是否超过 1 小时未更新
         current_time = time.time()
         time_diff = current_time - self.active_update_time
-        if time_diff > 3600 and len(self.active_simulations) > 0:  # 1 小时
-            self.logger.info(
-                f"active_update_time exceeds 1 hour (diff: {time_diff:.2f} seconds), and max concurrent simulations reached ({self.max_concurrent}). Resetting active simulations.")
+        if time_diff > 3600 and len(self.active_simulations) > 0:
+            self.logger.info(f"active_update_time exceeds 1 hour (diff: {time_diff:.2f} seconds), and max concurrent simulations reached ({self.max_concurrent}). Resetting active simulations.")
             self.session = self.sign_in(self.username, self.password)
             self.active_simulations.clear()
             self.logger.info("Active simulations cleared after re-signing in.")
 
-        # 如果没有活跃模拟，直接返回
         if len(self.active_simulations) == 0:
             self.logger.info("No one is in active simulation now")
             return None
 
-        # 准备输出文件路径
-        output_file = os.path.join(self.data_dir, self.FILE_CONFIG["output_file"])
-        count = 0  # 统计仍在处理中的模拟数量
-
-        # 遍历所有活跃模拟
+        count = 0
         for sim_url in self.active_simulations[:]:
-            # 检查模拟进度
-            alpha_details_list = self.check_simulation_progress(sim_url)
-
-            # 如果返回 None，表示模拟尚未完成，继续处理下一个
-            if alpha_details_list is None:
+            children = self.check_simulation_progress(sim_url)
+            if children is None:
                 count += 1
                 continue
 
-            # 模拟已完成，从活跃列表中移除
-            self.logger.info(f"Simulation batch {sim_url} completed. Removing from active list.")
+            # ✅ 模拟完成，从列表中移除并提交异步处理任务
+            self.logger.info(f"Simulation batch {sim_url} completed. Removing from active list and dispatching to worker.")
             self.active_simulations.remove(sim_url)
-
-            # 将所有 alpha 详情写入文件
-            with open(output_file, 'a', newline='') as file:
-                # 假设 alpha_details_list 中的每个元素有相同的字段
-                if alpha_details_list:
-                    writer = csv.DictWriter(file, fieldnames=alpha_details_list[0].keys())
-                    # 如果文件为空，写入表头
-                    if os.stat(output_file).st_size == 0:
-                        writer.writeheader()
-                    # 写入所有 alpha 详情
-                    for alpha_details in alpha_details_list:
-                        writer.writerow(alpha_details)
+            self.process_children_async(children)
 
         self.logger.info(f"Total {count} simulations are in process for account {self.username}.")
 
@@ -678,3 +678,4 @@ class AlphaSimulator:
         finally:
             self.logger.info("Shutting down, saving state...")
             self.save_state()
+            self.shutdown()
