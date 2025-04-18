@@ -1,11 +1,10 @@
 FROM python:3.9-slim
 
-# 设置正确的阿里云镜像源（关键修改）
-RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list && \
-    sed -i 's|security.debian.org|mirrors.aliyun.com/debian-security|g' /etc/apt/sources.list && \
-    echo "deb http://mirrors.aliyun.com/debian-security/ bullseye-security main" >> /etc/apt/sources.list && \
-    pip config set global.index-url https://mirrors.aliyun.com/pypi/simple/
-
+# 使用清华镜像源
+RUN echo "deb https://mirrors.tuna.tsinghua.edu.cn/debian/ bullseye main contrib non-free" > /etc/apt/sources.list && \
+    echo "deb https://mirrors.tuna.tsinghua.edu.cn/debian/ bullseye-updates main contrib non-free" >> /etc/apt/sources.list && \
+    echo "deb https://mirrors.tuna.tsinghua.edu.cn/debian-security bullseye-security main contrib non-free" >> /etc/apt/sources.list && \
+    pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple/
 # 安装系统依赖
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
