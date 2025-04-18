@@ -76,15 +76,15 @@ class AlphaSimulator:
         self.batch_number_for_every_queue = batch_number_for_every_queue
         self.batch_size = batch_size  # 存储 batch_size 作为实例变量
 
-        # 加载上次未完成的 active_simulations
-        self._load_previous_state()
-
         self.start_rotation_scheduler()  # 添加轮转调度
         self.task_queue = queue.Queue()
         self.lock = threading.Lock()  # 🔒 文件写入锁
         self.worker_thread = threading.Thread(target=self.worker)
         self.worker_thread.daemon = True
         self.worker_thread.start()
+
+        # 加载上次未完成的 active_simulations
+        self._load_previous_state()
 
     def signal_handler(self, signum, frame):
         self.logger.info(f"Received shutdown signal {signum}, , initiating shutdown...")
