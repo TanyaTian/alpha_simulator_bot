@@ -39,8 +39,8 @@ class AlphaSimulator:
             batch_number_for_every_queue (int): 每批处理数量
         """
         # 注册信号处理
-        signal.signal(signal.SIGTERM, signal_handler)
-        signal.signal(signal.SIGINT, signal_handler)
+        signal.signal(signal.SIGTERM, self.signal_handler)
+        signal.signal(signal.SIGINT, self.signal_handler)
         self.running = True
 
         # 创建 Logger 实例
