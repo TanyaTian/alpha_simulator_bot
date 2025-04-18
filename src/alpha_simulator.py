@@ -5,12 +5,12 @@ import requests
 import os
 import ast
 import json
-import signal
 import schedule
 import threading
 from pytz import timezone
 from logger import Logger  # 假设已定义 Logger 类
 from datetime import datetime, timedelta
+from signal_manager import SignalManager
 
 # 获取美国东部时间
 eastern = timezone('US/Eastern')
@@ -29,7 +29,7 @@ class AlphaSimulator:
         "state_file": "simulator_state.json"
     }
 
-    def __init__(self, max_concurrent, username, password, batch_number_for_every_queue, batch_size=10):
+    def __init__(self, max_concurrent, username, password, batch_number_for_every_queue, batch_size=10, signal_manager=None):
         """初始化模拟器
 
         Args:
@@ -38,13 +38,16 @@ class AlphaSimulator:
             password (str): 登录密码
             batch_number_for_every_queue (int): 每批处理数量
         """
-        # 注册信号处理
-        signal.signal(signal.SIGTERM, self.signal_handler)
-        signal.signal(signal.SIGINT, self.signal_handler)
         self.running = True
 
         # 创建 Logger 实例
         self.logger = Logger()
+
+        # 注册信号处理
+        if signal_manager:
+            signal_manager.add_handler(self.signal_handler)
+        else:
+            self.logger.warning("未提供 SignalManager，AlphaSimulator 无法注册信号处理函数")
 
         # 构建基础路径
         script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -86,8 +89,8 @@ class AlphaSimulator:
     def signal_handler(self, signum, frame):
         self.logger.info(f"Received shutdown signal {signum}, , initiating shutdown...")
         self.running = False
-        self.save_state
-        self.shutdown
+        self.save_state()
+        self.shutdown()
 
     def _validate_critical_files(self):
         """验证关键输入文件是否存在"""

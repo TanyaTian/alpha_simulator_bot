@@ -3,18 +3,18 @@ import pandas as pd
 import requests
 import schedule
 import threading
-import signal
 import os
 import csv
 from datetime import datetime, timedelta
 import ast
 from typing import List
 from logger import Logger
+from signal_manager import SignalManager
 
 
 
 class ProcessSimulatedAlphas:
-    def __init__(self, data_dir, output_dir, specified_sharpe, specified_fitness, username, password):
+    def __init__(self, data_dir, output_dir, specified_sharpe, specified_fitness, username, password, signal_manager=None):
         self.data_dir = data_dir
         self.output_dir = output_dir
         self.SPECIFIED_SHARPE = specified_sharpe
@@ -29,8 +29,11 @@ class ProcessSimulatedAlphas:
         self.date_str = self.get_yesterday_date()
         self.session = self.sign_in(username, password)
 
-        signal.signal(signal.SIGTERM, self.handle_exit_signal)
-        signal.signal(signal.SIGINT, self.handle_exit_signal)
+        # 注册信号处理
+        if signal_manager:
+            signal_manager.add_handler(self.handle_exit_signal)
+        else:
+            self.logger.warning("未提供 SignalManager，ProcessSimulatedAlphas 无法注册信号处理函数")
 
     def handle_exit_signal(self, signum, frame):
         self.logger.info(f"Received shutdown signal {signum}, saving unfinished alpha IDs...")

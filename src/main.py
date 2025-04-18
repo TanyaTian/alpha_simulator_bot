@@ -1,10 +1,11 @@
 import os
-
+import signal
 
 from alpha_simulator import AlphaSimulator
 from process_simulated_alphas import ProcessSimulatedAlphas
 from utils import load_config
-from logger import Logger  # 假设已定义 Logger 类
+from logger import Logger 
+from signal_manager import SignalManager
 
 
 # 创建全局 Logger 实例
@@ -29,6 +30,12 @@ def main():
         logger.error("One or more config parameters are missing or invalid. Exiting...")
         return
 
+    # 创建 SignalManager
+    signal_manager = SignalManager()
+    # 注册信号处理
+    signal.signal(signal.SIGTERM, signal_manager.handle_signal)
+    signal.signal(signal.SIGINT, signal_manager.handle_signal)
+    
     # 初始化 AlphaSimulator
     try:
         simulator = AlphaSimulator(
@@ -36,7 +43,8 @@ def main():
             username=username,
             password=password,
             batch_number_for_every_queue=batch_number_for_every_queue,
-            batch_size=batch_size
+            batch_size=batch_size,
+            signal_manager=signal_manager
         )
         logger.info("AlphaSimulator initialized successfully.")
     except FileNotFoundError as e:
@@ -58,7 +66,7 @@ def main():
     data_dir = os.path.join(project_root, 'data')
     output_dir = os.path.join(project_root, 'output')
     # 实例化 ProcessSimulatedAlphas 并启动调度
-    processor = ProcessSimulatedAlphas(data_dir, output_dir, 1.58, 1.0, username, password)
+    processor = ProcessSimulatedAlphas(data_dir, output_dir, 1.58, 1.0, username, password, signal_manager)
     processor.manage_process()
 
     # 启动模拟管理
