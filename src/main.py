@@ -1,6 +1,5 @@
 import os
 import signal
-
 from alpha_simulator import AlphaSimulator
 from process_simulated_alphas import ProcessSimulatedAlphas
 from utils import load_config

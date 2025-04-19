@@ -120,14 +120,6 @@ class AlphaSimulator:
                 self.active_simulations = state.get("active_simulations", [])
                 self.logger.info(f"Loaded {len(self.active_simulations)} previous active simulations from state.")
 
-            while self.active_simulations and self.running:
-                try:
-                    self.check_simulation_status()
-                except Exception as e:
-                    self.logger.error(f"Error checking previous simulations: {e}")
-                time.sleep(3)
-            self.logger.info("All previous active simulations processed.")
-
     def rotate_output_file(self):
         """每天 0 点轮转 output 文件，将前一天的文件重命名为 YYYY-MM-DD 格式"""
         current_date = datetime.now().date()
@@ -558,124 +550,176 @@ class AlphaSimulator:
 
 
     def process_children_async(self, children):
-        """
-        将处理 children 的任务异步放入队列，由后台 worker 串行处理。
+        """异步放入 children 处理任务"""
+        if not children:
+            self.logger.warning("Empty children list received. Skipping enqueue.")
+            return
 
-        Args:
-            children (list): 子模拟 ID 列表
-        """
-        self.logger.info(f"Enqueuing task for {len(children)} children.")
-        self.task_queue.put(children)
+        try:
+            self.task_queue.put(children, timeout=5)
+            self.logger.info(f"Enqueued task for {len(children)} children. Queue size: {self.task_queue.qsize()}")
+        except queue.Full:
+            self.logger.error(f"Task queue is full (maxsize=100). Dropping task for {len(children)} children.")
+            temp_file = os.path.join(self.data_dir, f"dropped_children_{int(time.time())}.json")
+            with open(temp_file, 'w') as f:
+                json.dump(children, f)
+            self.logger.info(f"Saved dropped children to {temp_file}")
 
 
     def process_children(self, children):
-        """
-        同步处理 children，依次获取每个 child 的 alphaId，再获取 alpha detail，并写入文件。
-
-        Args:
-            children (list): 子模拟 ID 列表
-        """
+        """同步处理 children，获取 alphaId 和 alpha detail，写入文件"""
         self.logger.info(f"Processing {len(children)} children...")
+        if not children:
+            self.logger.warning("Empty children list received. Skipping processing.")
+            return
+
         brain_api_url = "https://api.worldquantbrain.com"
         alpha_details_list = []
+        max_retries = 3
+        retry_delay = 5
+        request_timeout = 30
 
         for child in children:
-            try:
-                # 获取子模拟进度，提取 alpha_id
-                self.logger.debug(f"Fetching child simulation progress: {child}")
-                child_progress = self.session.get(f"{brain_api_url}/simulations/{child}")
-                child_progress.raise_for_status()
-                child_data = child_progress.json()
-
-                alpha_id = child_data.get("alpha")
-                if not alpha_id:
-                    self.logger.warning(f"No alpha_id found for child: {child}")
-                    continue
-
-                # 使用 alpha_id 获取 alpha 详情
-                self.logger.debug(f"Fetching alpha detail: {alpha_id}")
-                alpha_response = self.session.get(f"{brain_api_url}/alphas/{alpha_id}")
-                alpha_response.raise_for_status()
-                alpha_details = alpha_response.json()
-                alpha_details_list.append(alpha_details)
-
-            except requests.exceptions.RequestException as e:
-                self.logger.error(f"Error fetching child {child} or alpha detail: {e}")
+            self.logger.debug(f"Processing child: {child}")
+            if not isinstance(child, str):
+                self.logger.error(f"Invalid child format: {child} (Expected string)")
                 continue
 
-        # 写入所有 alpha detail 到文件中
+            for attempt in range(max_retries):
+                try:
+                    self.logger.debug(f"Fetching child simulation progress: {child} (Attempt {attempt + 1}/{max_retries})")
+                    child_progress = self.session.get(f"{brain_api_url}/simulations/{child}", timeout=request_timeout)
+                    child_progress.raise_for_status()
+                    child_data = child_progress.json()
+                    self.logger.debug(f"Child response: {child_data}")
+
+                    alpha_id = child_data.get("alpha")
+                    if not alpha_id:
+                        self.logger.warning(f"No alpha_id found for child: {child}. Response: {child_data}")
+                        break
+
+                    self.logger.debug(f"Fetching alpha detail for alpha_id: {alpha_id}")
+                    alpha_response = self.session.get(f"{brain_api_url}/alphas/{alpha_id}", timeout=request_timeout)
+                    alpha_response.raise_for_status()
+                    alpha_details = alpha_response.json()
+                    if not alpha_details:
+                        self.logger.warning(f"Empty alpha details for alpha_id: {alpha_id}")
+                        break
+
+                    alpha_details_list.append(alpha_details)
+                    self.logger.debug(f"Successfully retrieved alpha details for alpha_id: {alpha_id}")
+                    break
+
+                except requests.exceptions.RequestException as e:
+                    self.logger.error(f"Error fetching child {child} or alpha detail (Attempt {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        self.logger.info(f"Retrying after {retry_delay}s...")
+                        time.sleep(retry_delay)
+                    else:
+                        self.logger.error(f"Max retries reached for child {child}. Skipping...")
+                        if "401" in str(e) or "403" in str(e):
+                            self.logger.info("Authentication error detected. Re-signing in...")
+                            self.session = self.sign_in(self.username, self.password)
+                        break
+                except ValueError as e:
+                    self.logger.error(f"Invalid JSON response for child {child}: {e}")
+                    break
+                except Exception as e:
+                    self.logger.error(f"Unexpected error processing child {child}: {e}")
+                    break
+
         if alpha_details_list:
             output_file = os.path.join(self.data_dir, self.FILE_CONFIG["output_file"])
             try:
-                with self.lock:  # 使用锁，确保文件写入时线程安全
+                with self.lock:
                     self.logger.info(f"Writing {len(alpha_details_list)} alpha details to file: {output_file}")
+                    if not os.access(self.data_dir, os.W_OK):
+                        self.logger.error(f"No write permission for directory: {self.data_dir}")
+                        return
+                    fieldnames = alpha_details_list[0].keys()
                     with open(output_file, 'a', newline='') as file:
-                        writer = csv.DictWriter(file, fieldnames=alpha_details_list[0].keys())
+                        writer = csv.DictWriter(file, fieldnames=fieldnames)
                         if os.stat(output_file).st_size == 0:
                             writer.writeheader()
                         for alpha_details in alpha_details_list:
-                            writer.writerow(alpha_details)
+                            try:
+                                writer.writerow(alpha_details)
+                                self.logger.debug(f"Wrote alpha details: {alpha_details.get('id', 'unknown')}")
+                            except Exception as e:
+                                self.logger.error(f"Error writing alpha details {alpha_details.get('id', 'unknown')}: {e}")
+                    self.logger.info(f"Successfully wrote {len(alpha_details_list)} alpha details to {output_file}")
+            except PermissionError as e:
+                self.logger.error(f"Permission error writing to file {output_file}: {e}")
             except Exception as e:
-                self.logger.error(f"Error writing to file: {e}")
+                self.logger.error(f"Error writing to file {output_file}: {e}")
         else:
-            self.logger.info("No alpha details to write. List is empty.")
-
+            self.logger.warning(f"No alpha details to write for {len(children)} children. alpha_details_list is empty.")
 
     def worker(self):
-        """
-        后台子线程，从队列中顺序获取 children 列表，并处理为 alpha detail 写入文件。
-
-        由于队列机制，同一时间只会有一个线程执行该函数。
-        """
+        """后台子线程，处理队列中的 children 列表"""
         self.logger.info("Worker thread started. Waiting for tasks...")
-        while True:
-            # 从队列中获取任务（阻塞）
-            children = self.task_queue.get()
-            if children is None:
-                self.logger.info("Shutdown signal received. Worker thread exiting.")
-                self.task_queue.task_done()
-                break
+        while self.running:
+            try:
+                children = self.task_queue.get(timeout=10)
+                if children is None:
+                    self.logger.info("Shutdown signal received. Worker thread exiting.")
+                    self.task_queue.task_done()
+                    break
 
-            self.logger.info(f"Worker received a task with {len(children)} children.")
-            self.process_children(children)
-            self.logger.info("Worker finished processing current task.")
-            self.task_queue.task_done()
+                self.logger.info(f"Worker received a task with {len(children)} children.")
+                self.process_children(children)
+                self.logger.info("Worker finished processing current task.")
+                self.task_queue.task_done()
+
+            except queue.Empty:
+                self.logger.debug("Task queue is empty. Waiting for new tasks...")
+                continue
+            except Exception as e:
+                self.logger.error(f"Unexpected error in worker thread: {e}")
+                self.task_queue.task_done()
+                continue
+
+        self.logger.info("Worker thread stopped.")
 
     def shutdown(self):
-        """
-        优雅关闭子线程。应在程序结束前调用。
-        """
+        """优雅关闭子线程"""
         self.logger.info("Shutting down the worker thread...")
-        self.task_queue.put(None)  # 添加关闭信号
-        self.worker_thread.join()
+        self.task_queue.put(None)
+        if self.worker_thread.is_alive():
+            self.worker_thread.join(timeout=10)
+            if self.worker_thread.is_alive():
+                self.logger.warning("Worker thread did not terminate within 10 seconds.")
         self.logger.info("Worker thread has been successfully shut down.")
 
     def check_simulation_status(self):
+        """检查所有活跃模拟的状态"""
         current_time = time.time()
         time_diff = current_time - self.active_update_time
         if time_diff > 3600 and len(self.active_simulations) > 0:
-            self.logger.info(f"active_update_time exceeds 1 hour (diff: {time_diff:.2f} seconds), and max concurrent simulations reached ({self.max_concurrent}). Resetting active simulations.")
+            self.logger.warning(f"active_update_time exceeds 1 hour (diff: {time_diff:.2f} seconds). Resetting active simulations.")
             self.session = self.sign_in(self.username, self.password)
             self.active_simulations.clear()
             self.logger.info("Active simulations cleared after re-signing in.")
 
-        if len(self.active_simulations) == 0:
-            self.logger.info("No one is in active simulation now")
-            return None
+        if not self.active_simulations:
+            self.logger.info("No active simulations to check.")
+            return
 
+        self.logger.info(f"Checking {len(self.active_simulations)} active simulations...")
         count = 0
         for sim_url in self.active_simulations[:]:
             children = self.check_simulation_progress(sim_url)
             if children is None:
                 count += 1
+                self.logger.debug(f"Simulation {sim_url} still in progress or failed.")
                 continue
 
-            # ✅ 模拟完成，从列表中移除并提交异步处理任务
-            self.logger.info(f"Simulation batch {sim_url} completed. Removing from active list and dispatching to worker.")
+            self.logger.info(f"Simulation batch {sim_url} completed. Removing from active list.")
             self.active_simulations.remove(sim_url)
             self.process_children_async(children)
+            self.active_update_time = time.time()
 
-        self.logger.info(f"Total {count} simulations are in process for account {self.username}.")
+        self.logger.info(f"Total {count} simulations still in progress for account {self.username}.")
 
     def save_state(self):
         """保存当前状态"""
