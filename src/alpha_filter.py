@@ -72,21 +72,40 @@ class AlphaFilter:
             self.logger.error(f"File not found: {file_path}")
             raise
 
-    def filter_alphas(self, df: pd.DataFrame, min_fitness: float, min_sharpe: float) -> List[Dict]:
+    def filter_alphas(self, df: pd.DataFrame, min_fitness: float, min_sharpe: float, exclude_operators: List[str] = None) -> List[Dict]:
         """
-        筛选符合 fitness 和 sharpe 条件的 alpha，构造 alpha_result，并按 sharpe 值从小到大排序。
+        筛选符合 fitness 和 sharpe 条件的 alpha，过滤掉包含指定运算符的行，构造 alpha_result，并按 sharpe 值从小到大排序。
 
         参数:
             df (pd.DataFrame): 包含 alpha 数据的 DataFrame。
             min_fitness (float): 最小 fitness 阈值。
             min_sharpe (float): 最小 sharpe 阈值。
+            exclude_operators (List[str], optional): 需要过滤的运算符列表，例如 ['trade_when', 'other_operator']。
 
         返回:
             List[Dict]: 筛选后的 alpha 元数据列表，每个字典包含 id、settings 和 sharpe，按 sharpe 排序。
         """
+        # 如果 exclude_operators 为空，则初始化为空列表
+        exclude_operators = exclude_operators or []
+        
         alpha_result = []
         for _, row in df.iterrows():
             try:
+                # 解析 regular 列（Python 字典字符串）
+                regular_str = row['regular']
+                try:
+                    regular_data = ast.literal_eval(regular_str)
+                except (SyntaxError, ValueError) as e:
+                    self.logger.warning(f"Failed to parse alpha {row['id']} regular field: {e}, raw data: {regular_str[:100]}...")
+                    continue
+
+                # 检查 code 中是否包含需要过滤的运算符
+                code = regular_data.get('code', '')
+                if exclude_operators:  # 只有当 exclude_operators 不为空时才进行检查
+                    if not all(x not in code for x in exclude_operators):
+                        self.logger.info(f"Skipping alpha {row['id']} due to presence of operator '{exclude_operators}' in code")
+                        continue  # 只要发现一个匹配的运算符就跳过
+
                 # 解析 is 列（Python 字典字符串）
                 is_str = row['is']
                 try:
@@ -132,7 +151,7 @@ class AlphaFilter:
         # 按 sharpe 绝对值从小到大排序
         alpha_result.sort(key=lambda x: x['abs_sharpe'])
         
-        # 移除临时添加的abs_sharpe字段
+        # 移除临时添加的 abs_sharpe 字段
         for item in alpha_result:
             item.pop('abs_sharpe', None)
         self.logger.info(f"Filtered {len(alpha_result)} alphas (fitness >= {min_fitness}, sharpe >= {min_sharpe}), sorted by sharpe")
@@ -338,7 +357,7 @@ class AlphaFilter:
         df = self.load_alpha_data()
 
         # 筛选符合 fitness 和 sharpe 条件的 alpha
-        alpha_result = self.filter_alphas(df, min_fitness, min_sharpe)
+        alpha_result = self.filter_alphas(df, min_fitness, min_sharpe, ['trade_when'])
 
         # 使用筛选后的 alpha 生成比较数据
         self.generate_comparison_data(alpha_result)
@@ -424,4 +443,3 @@ def main():
 if __name__ == "__main__":
     main()
 """
-
