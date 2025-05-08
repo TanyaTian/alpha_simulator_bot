@@ -271,12 +271,18 @@ class ProcessSimulatedAlphas:
                 time.sleep(float(result.headers["Retry-After"]))
             else:
                 break
+        
         try:
             result_json = result.json()
             if result_json.get("is", 0) == 0:
                 return "sleep"
 
             checks_df = pd.DataFrame(result_json["is"]["checks"])
+            
+            # 检查是否有任何检查项的result为"ERROR"
+            if any(checks_df["result"] == "ERROR"):
+                return "error"
+                
             pc = checks_df[checks_df.name == "PROD_CORRELATION"]["value"].values[0]
 
             failed_checks = checks_df[checks_df["result"] == "FAIL"]
