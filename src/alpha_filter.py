@@ -154,6 +154,17 @@ class AlphaFilter:
         # 移除临时添加的 abs_sharpe 字段
         for item in alpha_result:
             item.pop('abs_sharpe', None)
+        
+        # 打印前3个和后3个alpha的详情
+        if len(alpha_result) > 0:
+            self.logger.info("First 3 alphas:")
+            for alpha in alpha_result[:3]:
+                self.logger.info(f"ID: {alpha['id']}, sharpe: {alpha['sharpe']}, fitness: {alpha['settings'].get('fitness', 'N/A')}")
+            
+            self.logger.info("Last 3 alphas:") 
+            for alpha in alpha_result[-3:]:
+                self.logger.info(f"ID: {alpha['id']}, sharpe: {alpha['sharpe']}, fitness: {alpha['settings'].get('fitness', 'N/A')}")
+
         self.logger.info(f"Filtered {len(alpha_result)} alphas (fitness >= {min_fitness}, sharpe >= {min_sharpe}), sorted by sharpe")
         return alpha_result
 
@@ -434,12 +445,17 @@ def main():
     min_fitness = 0.7
     min_sharpe = 1.2
     corr_threshold = 0.7
-    date_str = "2025-04-24"
 
     # 初始化并运行
     filter = AlphaFilter(username, password)
-    filter.process_alphas(min_fitness, min_sharpe, corr_threshold)
+    df = filter.load_alpha_data()
+
+        # 筛选符合 fitness 和 sharpe 条件的 alpha
+    alpha_result = filter.filter_alphas(df, min_fitness, min_sharpe, ['trade_when'])
+
+    #filter.process_alphas(min_fitness, min_sharpe, corr_threshold)
 
 if __name__ == "__main__":
     main()
 """
+
