@@ -1,4 +1,4 @@
 config/config.ini
 __pycache__/
 logs/
-data/
+data/output/
