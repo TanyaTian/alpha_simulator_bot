@@ -289,14 +289,15 @@ class ProcessSimulatedAlphas:
             if result == "sleep" or (isinstance(result, tuple) and result[0] != result[0]) or result == "fail" or result == "error":
                 if result == "sleep":
                     self.logger.warning(f"alphaId {alpha_id} needs cooldown, re-queuing.")
+                    self.alpha_ids.append(alpha_id)
                 elif isinstance(result, tuple) and result[0] != result[0]:  # 检查pc是否为NaN
                     self.logger.warning(f"prod-correlation check failed (NaN) for alphaId {alpha_id}, re-queuing.")
+                    self.alpha_ids.append(alpha_id)
                 elif result == "fail":
-                    self.logger.warning(f"alphaId {alpha_id} failed other checks, re-queuing.")
+                    self.logger.warning(f"alphaId {alpha_id} failed other checks.")
                 else:
                     self.logger.error(f"alphaId {alpha_id} error during check.")
                 
-                self.alpha_ids.append(alpha_id)
                 wait_time = max(5, min(60, int(300 / (len(self.alpha_ids) + 1))))
                 self.logger.info(f"Sleeping for {wait_time} seconds before retrying.")
                 time.sleep(wait_time)
