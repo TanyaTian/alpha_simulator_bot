@@ -73,7 +73,7 @@ class ProcessSimulatedAlphas:
     def initialize_alpha_ids(self):
         self.logger.info("Initializing alpha_ids...")
 
-        filtered_file = os.path.join(self.output_dir, f'filtered_alpha_ids.{self.date_str}.csv')
+        filtered_file = os.path.join(self.output_dir, f'stone_bag.csv.{self.date_str}')
         temp_file = os.path.join(self.output_dir, 'unfinished_alpha_ids.temp.csv')
 
         if os.path.exists(temp_file):
@@ -87,15 +87,53 @@ class ProcessSimulatedAlphas:
         if not os.path.exists(filtered_file):
             self.logger.info("Filtered file does not exist. Running filter step and loading alpha IDs.")
             self.read_and_filter_alpha_ids(self.date_str)
-            if os.path.exists(filtered_file):
-                new_ids = []
-                with open(filtered_file, 'r', encoding='utf-8') as f:
-                    reader = csv.reader(f)
-                    next(reader, None)
-                    new_ids = [row[0] for row in reader if row]
-                self.alpha_ids += new_ids
-                self.alpha_ids = list(set(self.alpha_ids))
-                self.logger.info(f"Appended {len(new_ids)} new alpha IDs. Total now: {len(self.alpha_ids)}")
+            stone_bag_file = os.path.join(self.output_dir, f'stone_bag.csv.{self.date_str}')
+            
+            # 3. 读取stone_bag文件并排序
+            alpha_result = []
+            if os.path.exists(stone_bag_file):
+                with open(stone_bag_file, 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        try:
+                            is_data = ast.literal_eval(row['is'].strip().strip('"\''))
+                            alpha_result.append({
+                                'id': row['id'],
+                                'settings': ast.literal_eval(row['settings']),
+                                'is': is_data
+                            })
+                        except Exception as e:
+                            self.logger.warning(f"Failed to parse alpha {row.get('id')}: {e}")
+                            continue
+                
+                # 按sharpe值从小到大排序
+                alpha_result.sort(key=lambda x: x['is'].get('sharpe', 0))
+                self.logger.info(f"Loaded and sorted {len(alpha_result)} alphas from stone_bag file")
+            
+            # 4. 调用alpha_prune.py方法
+            if alpha_result:
+                try:
+                    os_alpha_ids, os_alpha_rets = generate_comparison_data(
+                        alpha_result, 
+                        self.username, 
+                        self.password
+                    )
+                    filtered_alphas = calculate_correlations(
+                        os_alpha_ids,
+                        os_alpha_rets,
+                        self.username,
+                        self.password,
+                        corr_threshold=0.7
+                    )
+                    self.logger.info(f"Filtered alphas by correlation: {sum(len(v) for v in filtered_alphas.values())} alphas remaining")
+                    
+                    # 5. 追加到alpha_ids
+                    for region, alpha_ids in filtered_alphas.items():
+                        self.alpha_ids.extend(alpha_ids)
+                        self.logger.info(f"region: {region},{len(alpha_ids)} alphas remaining")
+                    self.alpha_ids = list(set(self.alpha_ids))
+                except Exception as e:
+                    self.logger.error(f"Failed to filter alphas by correlation: {e}")
         self.total = len(self.alpha_ids)
         self.logger.info(f"Total alpha IDs to process: {self.total}")
 
@@ -397,7 +435,7 @@ class ProcessSimulatedAlphas:
                     # 5. 追加到alpha_ids
                     for region, alpha_ids in filtered_alphas.items():
                         self.alpha_ids.extend(alpha_ids)
-                        self.logger.info(f"region: {len(alpha_ids)} alphas remaining")
+                        self.logger.info(f"region: {region},{len(alpha_ids)} alphas remaining")
                     self.alpha_ids = list(set(self.alpha_ids))
                 except Exception as e:
                     self.logger.error(f"Failed to filter alphas by correlation: {e}")
