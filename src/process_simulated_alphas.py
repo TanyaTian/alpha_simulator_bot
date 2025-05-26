@@ -8,6 +8,7 @@ import csv
 from datetime import datetime, timedelta
 import ast
 from typing import List
+from alpha_prune import calculate_correlations, generate_comparison_data
 from logger import Logger
 from signal_manager import SignalManager
 from io import StringIO
@@ -346,20 +347,65 @@ class ProcessSimulatedAlphas:
         self._scheduler_running = True
         def job():
             self.logger.info("Scheduled task triggered at 00:30.")
+            
+            # 1. 刷新date_str
             self.date_str = self.get_yesterday_date()
+            self.logger.info(f"Processing date updated to: {self.date_str}")
+            
+            # 2. 生成stone_bag文件
             self.read_and_filter_alpha_ids(self.date_str)
-            filtered_file = os.path.join(self.output_dir, f'filtered_alpha_ids.{self.date_str}.csv')
-            if os.path.exists(filtered_file):
-                new_ids = []
-                with open(filtered_file, 'r', encoding='utf-8') as f:
-                    reader = csv.reader(f)
-                    next(reader, None)
-                    new_ids = [row[0] for row in reader if row]
-                self.alpha_ids += new_ids
-                self.alpha_ids = list(set(self.alpha_ids))
-                self.total = len(self.alpha_ids)
-                self.idx = 0
-                self.logger.info(f"Appended {len(new_ids)} new alpha IDs. Total now: {self.total}")
+            stone_bag_file = os.path.join(self.output_dir, f'stone_bag.csv.{self.date_str}')
+            
+            # 3. 读取stone_bag文件并排序
+            alpha_result = []
+            if os.path.exists(stone_bag_file):
+                with open(stone_bag_file, 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    for row in reader:
+                        try:
+                            is_data = ast.literal_eval(row['is'].strip().strip('"\''))
+                            alpha_result.append({
+                                'id': row['id'],
+                                'settings': ast.literal_eval(row['settings']),
+                                'is': is_data
+                            })
+                        except Exception as e:
+                            self.logger.warning(f"Failed to parse alpha {row.get('id')}: {e}")
+                            continue
+                
+                # 按sharpe值从小到大排序
+                alpha_result.sort(key=lambda x: x['is'].get('sharpe', 0))
+                self.logger.info(f"Loaded and sorted {len(alpha_result)} alphas from stone_bag file")
+            
+            # 4. 调用alpha_prune.py方法
+            if alpha_result:
+                try:
+                    os_alpha_ids, os_alpha_rets = generate_comparison_data(
+                        alpha_result, 
+                        self.username, 
+                        self.password
+                    )
+                    filtered_alphas = calculate_correlations(
+                        os_alpha_ids,
+                        os_alpha_rets,
+                        self.username,
+                        self.password,
+                        corr_threshold=0.7
+                    )
+                    self.logger.info(f"Filtered alphas by correlation: {sum(len(v) for v in filtered_alphas.values())} alphas remaining")
+                    
+                    # 5. 追加到alpha_ids
+                    for region, alpha_ids in filtered_alphas.items():
+                        self.alpha_ids.extend(alpha_ids)
+                        self.logger.info(f"region: {len(alpha_ids)} alphas remaining")
+                    self.alpha_ids = list(set(self.alpha_ids))
+                except Exception as e:
+                    self.logger.error(f"Failed to filter alphas by correlation: {e}")
+            
+            # 6. 更新total和idx
+            self.total = len(self.alpha_ids)
+            self.idx = 0
+            self.logger.info(f"Total alpha IDs to process: {self.total}")
 
         # 清除可能存在的旧任务
         schedule.clear()
@@ -408,14 +454,67 @@ class ProcessSimulatedAlphas:
         self.process_thread = threading.Thread(target=self.process_alpha_ids_loop, daemon=True)
         self.process_thread.start()
 
-
+    
 
 """
 data_dir = "./data"
 output_dir = "./output"
 specified_sharpe = 1.58
 specified_fitness = 1.0
-processor = ProcessSimulatedAlphas(data_dir, output_dir, specified_sharpe, specified_fitness, username, password)
-processor.manage_process()
-"""
+stone_bag_file = os.path.join(output_dir, 'stone_bag.csv.2025-05-25')
+logger = Logger()
+            
+# 3. 读取stone_bag文件并排序
+alpha_result = []
+if os.path.exists(stone_bag_file):
+    with open(stone_bag_file, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            try:
+                is_data = ast.literal_eval(row['is'].strip().strip('"\''))
+                alpha_result.append({
+                    'id': row['id'],
+                    'settings': ast.literal_eval(row['settings']),
+                    'is': is_data
+                })
+            except Exception as e:
+                logger.warning(f"Failed to parse alpha {row.get('id')}: {e}")
+                continue
+    
+    # 按sharpe值从小到大排序
+    alpha_result.sort(key=lambda x: x['is'].get('sharpe', 0))
+    logger.info(f"Loaded and sorted {len(alpha_result)} alphas from stone_bag file")
+    if len(alpha_result) > 0:
+        logger.info("First 3 alphas:")
+        for alpha in alpha_result[:3]:
+            logger.info(f"ID: {alpha['id']}, sharpe: {alpha['is'].get('sharpe', 0)}")
+        
+        logger.info("Last 3 alphas:") 
+        for alpha in alpha_result[-3:]:
+            logger.info(f"ID: {alpha['id']}, sharpe: {alpha['is'].get('sharpe', 0)}")
 
+
+# 4. 调用alpha_prune.py方法
+if alpha_result:
+    try:
+        os_alpha_ids, os_alpha_rets = generate_comparison_data(
+            alpha_result, 
+            username, 
+            password
+        )
+
+        filtered_alphas = calculate_correlations(
+            os_alpha_ids,
+            os_alpha_rets,
+            username,
+            password,
+            corr_threshold=0.7
+        )
+        logger.info(f"Filtered alphas by correlation: {sum(len(v) for v in filtered_alphas.values())} alphas remaining")
+        
+        # 5. 追加到alpha_ids
+        for region, alpha_ids in filtered_alphas.items():
+            logger.info(f"region:{region}, alpha_ids:{len(alpha_ids)}")
+    except Exception as e:
+        logger.error(f"Failed to filter alphas by correlation: {e}")
+"""
