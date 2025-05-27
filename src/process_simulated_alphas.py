@@ -369,6 +369,8 @@ class ProcessSimulatedAlphas:
     def save_unfinished_alpha_ids(self):
         if self.alpha_ids:
             temp_path = os.path.join(self.output_dir, 'unfinished_alpha_ids.temp.csv')
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
             os.makedirs(self.output_dir, exist_ok=True)
             with open(temp_path, 'w', newline='', encoding='utf-8') as f:
                 writer = csv.writer(f)
