@@ -385,7 +385,7 @@ class ProcessSimulatedAlphas:
         self.logger.info("Starting daily schedule...")
         self._scheduler_running = True
         def job():
-            self.logger.info("Scheduled task triggered at 05:30.")
+            self.logger.info("Scheduled task triggered at 12:30.")
             
             # 1. 刷新date_str
             self.date_str = self.get_yesterday_date()
@@ -448,7 +448,7 @@ class ProcessSimulatedAlphas:
 
         # 清除可能存在的旧任务
         schedule.clear()
-        schedule.every().day.at("05:30").do(job).tag('daily_alpha_task')
+        schedule.every().day.at("12:30").do(job).tag('daily_alpha_task')
 
         def run_scheduler():
             while self._scheduler_running:  # 使用标志位控制循环

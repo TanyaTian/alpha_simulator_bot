@@ -146,6 +146,6 @@ def calculate_correlations(
 
             temp_alpha_ids[region].pop(0)
 
-        logger.info(f"[alpha_prune.py] Finished region: {region}, selected {len(filtered_alphas[region])}/{alpha_count} alphas")
+        logger.info(f"Finished region: {region}, selected {len(filtered_alphas[region])}/{alpha_count} alphas")
 
     return filtered_alphas
