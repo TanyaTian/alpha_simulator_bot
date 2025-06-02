@@ -123,7 +123,7 @@ class ProcessSimulatedAlphas:
                         os_alpha_rets,
                         self.username,
                         self.password,
-                        corr_threshold=0.7
+                        corr_threshold=0.8
                     )
                     self.logger.info(f"Filtered alphas by correlation: {sum(len(v) for v in filtered_alphas.values())} alphas remaining")
                     
