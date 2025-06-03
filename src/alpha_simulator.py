@@ -254,8 +254,10 @@ class AlphaSimulator:
 
     def read_alphas_from_csv_in_batches(self, batch_size=50):
         """从CSV文件中分批读取alphas"""
+        self.logger.debug(f"Starting to read alphas in batches (batch_size={batch_size})")
         alphas = []
         temp_file_name = self.alpha_list_file_path + '.tmp'
+        self.logger.debug(f"Using temporary file: {temp_file_name}")
 
         # 检查并管理输入文件
         if not os.path.exists(self.alpha_list_file_path):
@@ -278,7 +280,9 @@ class AlphaSimulator:
         with open(self.alpha_list_file_path, 'r') as file, open(temp_file_name, 'w', newline='') as temp_file:
             reader = csv.DictReader(file)
             fieldnames = reader.fieldnames
+            self.logger.debug(f"CSV fieldnames: {fieldnames}")
             if fieldnames is None:  # 完全空文件情况
+                self.logger.warning("Input file has no headers/fieldnames")
                 return alphas
                 
             # 确保表头包含预期字段
@@ -289,10 +293,14 @@ class AlphaSimulator:
                 
             writer = csv.DictWriter(temp_file, fieldnames=fieldnames)
             writer.writeheader()
+            self.logger.debug(f"Initialized CSV writer with fieldnames: {fieldnames}")
 
+            self.logger.debug(f"Reading {batch_size} alphas from file")
+            read_count = 0
             for _ in range(batch_size):
                 try:
                     row = next(reader)
+                    read_count += 1
                     if 'settings' in row:
                         if isinstance(row['settings'], str):
                             try:
@@ -303,31 +311,54 @@ class AlphaSimulator:
                             self.logger.error(f"Unexpected type for settings: {type(row['settings'])}")
                     alphas.append(row)
                 except StopIteration:
+                    self.logger.debug(f"Reached end of file after reading {read_count} alphas")
                     break
 
-            for remaining_row in reader:
-                writer.writerow(remaining_row)
+            remaining_rows = []
+            for row in reader:
+                if None in row:
+                    self.logger.error(f"Row contains None key: {row}")
+                    continue
+                if not all(field in row for field in fieldnames):
+                    self.logger.error(f"Row missing fields: {row} (expected: {fieldnames})")
+                    continue
+                self.logger.debug(f"Valid row: {row}")
+                remaining_rows.append(row)
+            
+            for row in remaining_rows:
+                try:
+                    writer.writerow(row)
+                except ValueError as e:
+                    self.logger.error(f"Failed to write row: {row}. Error: {e}")
+                    raise
 
         try:
             os.replace(temp_file_name, self.alpha_list_file_path)
+            self.logger.info(f"Successfully replaced {self.alpha_list_file_path} with new data")
         except OSError as e:
             if hasattr(e, 'winerror') and e.winerror == 5:  # 拒绝访问
                 self.logger.error("Access denied when replacing file. Trying to delete original and rename temporary.")
                 try:
                     os.remove(self.alpha_list_file_path)
                     os.rename(temp_file_name, self.alpha_list_file_path)
+                    self.logger.info("Successfully handled file replacement after access denied")
                 except OSError as e2:
                     self.logger.error(f"Failed to delete original or rename temporary file: {e2}")
             else:
+                self.logger.error(f"Unexpected error during file replacement: {e}")
                 raise
 
         queue_path = os.path.join(self.data_dir, 'sim_queue.csv')
         if alphas:
+            self.logger.debug(f"Writing {len(alphas)} alphas to queue file: {queue_path}")
             with open(queue_path, 'w', newline='') as file:
                 writer = csv.DictWriter(file, fieldnames=alphas[0].keys())
                 if file.tell() == 0:
                     writer.writeheader()
                 writer.writerows(alphas)
+            self.logger.info(f"Successfully wrote batch of {len(alphas)} alphas to queue")
+        else:
+            self.logger.warning("No alphas were read in this batch")
         return alphas
     def simulate_alpha(self, alpha_list):
         """
