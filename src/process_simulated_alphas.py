@@ -84,6 +84,7 @@ class ProcessSimulatedAlphas:
         else:
             self.logger.info("No temp file. Assuming processing is ongoing.")
 
+        """
         if not os.path.exists(filtered_file):
             self.logger.info("Filtered file does not exist. Running filter step and loading alpha IDs.")
             self.read_and_filter_alpha_ids(self.date_str)
@@ -134,6 +135,7 @@ class ProcessSimulatedAlphas:
                     self.alpha_ids = list(set(self.alpha_ids))
                 except Exception as e:
                     self.logger.error(f"Failed to filter alphas by correlation: {e}")
+        """
         self.total = len(self.alpha_ids)
         self.logger.info(f"Total alpha IDs to process: {self.total}")
 
