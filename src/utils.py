@@ -59,13 +59,15 @@ def load_config(config_file="config/config.ini"):
             'password': config.get('Credentials', 'password'),
             'max_concurrent': config.getint('Credentials', 'max_concurrent'),
             'batch_number_for_every_queue': config.getint('Credentials', 'batch_number_for_every_queue'),
-            'batch_size':config.getint('Credentials', 'batch_size')
+            'batch_size': config.getint('Credentials', 'batch_size'),
+            'init_date_str': config.get('Credentials', 'init_date_str')
         }
 
         # 日志记录参数值，方便调试
         logger.info(f"Loaded config from {config_path}: username={config_data['username']}, "
                    f"max_concurrent={config_data['max_concurrent']} (type: {type(config_data['max_concurrent'])}), "
-                   f"batch_number={config_data['batch_number_for_every_queue']} (type: {type(config_data['batch_number_for_every_queue'])})")
+                   f"batch_number={config_data['batch_number_for_every_queue']} (type: {type(config_data['batch_number_for_every_queue'])}), "
+                   f"init_date={config_data['init_date_str']}")
 
         return config_data
 

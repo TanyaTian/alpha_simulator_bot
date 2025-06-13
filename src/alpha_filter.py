@@ -306,11 +306,11 @@ class AlphaFilter:
                     alpha['self_corr'] = max_corr
                     self.logger.info(f"Added self_corr to alpha {alpha_id}: {max_corr}")
 
-                    if max_corr < corr_threshold:
+                    if max_corr < corr_threshold and not (max_corr == 0.0 and len(temp_alpha_ids[region]) > 1):
                         filtered_alphas[region].append(alpha)
                         self.logger.info(f"Alpha {alpha_id} passed filter (correlation {max_corr} < {corr_threshold})")
                     else:
-                        self.logger.info(f"Alpha {alpha_id} filtered out (correlation {max_corr} >= {corr_threshold})")
+                        self.logger.info(f"Alpha {alpha_id} filtered out (correlation {max_corr} >= {corr_threshold} or (max_corr=0.0 and region has {len(temp_alpha_ids[region])} alphas))")
                 except Exception as e:
                     self.logger.error(f"Failed to calculate correlation for alpha {alpha_id}: {e}")
 
@@ -458,4 +458,3 @@ def main():
 if __name__ == "__main__":
     main()
 """
-

@@ -26,6 +26,7 @@ def main():
     max_concurrent = config['max_concurrent']
     batch_number_for_every_queue = config['batch_number_for_every_queue']
     batch_size = config['batch_size']
+    init_date = config['init_date_str']
     if not all([username, password, max_concurrent, batch_number_for_every_queue]):
         logger.error("One or more config parameters are missing or invalid. Exiting...")
         return
@@ -66,7 +67,14 @@ def main():
     data_dir = os.path.join(project_root, 'data')
     output_dir = os.path.join(project_root, 'output')
     # 实例化 ProcessSimulatedAlphas 并启动调度
-    processor = ProcessSimulatedAlphas(data_dir, output_dir, 1.58, 1.0, username, password, signal_manager)
+    processor = ProcessSimulatedAlphas(
+        data_dir, 
+        output_dir, 
+        1.58, 1.0, 
+        username, 
+        password, 
+        init_date, 
+        signal_manager)
     processor.manage_process()
 
     # 初始化 AlphaFilter

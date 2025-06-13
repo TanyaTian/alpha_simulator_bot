@@ -16,7 +16,7 @@ from io import StringIO
 
 
 class ProcessSimulatedAlphas:
-    def __init__(self, data_dir, output_dir, specified_sharpe, specified_fitness, username, password, signal_manager=None):
+    def __init__(self, data_dir, output_dir, specified_sharpe, specified_fitness, username, password, init_date, signal_manager=None):
         self.data_dir = data_dir
         self.output_dir = output_dir
         self.SPECIFIED_SHARPE = specified_sharpe
@@ -28,6 +28,7 @@ class ProcessSimulatedAlphas:
         self.alpha_ids: List[str] = []
         self.total = 0
         self.idx = 0
+        self.init_date = init_date
         self.date_str = self.get_yesterday_date()
         self.session = self.sign_in(username, password)
         self._scheduler_running = False
@@ -73,7 +74,7 @@ class ProcessSimulatedAlphas:
     def initialize_alpha_ids(self):
         self.logger.info("Initializing alpha_ids...")
 
-        filtered_file = os.path.join(self.output_dir, f'stone_bag.csv.{self.date_str}')
+        filtered_file = os.path.join(self.output_dir, f'stone_bag.csv.{self.init_date}')
         temp_file = os.path.join(self.output_dir, 'unfinished_alpha_ids.temp.csv')
 
         if os.path.exists(temp_file):
@@ -84,11 +85,11 @@ class ProcessSimulatedAlphas:
         else:
             self.logger.info("No temp file. Assuming processing is ongoing.")
 
-        """
+        
         if not os.path.exists(filtered_file):
             self.logger.info("Filtered file does not exist. Running filter step and loading alpha IDs.")
-            self.read_and_filter_alpha_ids(self.date_str)
-            stone_bag_file = os.path.join(self.output_dir, f'stone_bag.csv.{self.date_str}')
+            self.read_and_filter_alpha_ids(self.init_date)
+            stone_bag_file = os.path.join(self.output_dir, f'stone_bag.csv.{self.init_date}')
             
             # 3. 读取stone_bag文件并排序
             alpha_result = []
@@ -135,7 +136,6 @@ class ProcessSimulatedAlphas:
                     self.alpha_ids = list(set(self.alpha_ids))
                 except Exception as e:
                     self.logger.error(f"Failed to filter alphas by correlation: {e}")
-        """
         self.total = len(self.alpha_ids)
         self.logger.info(f"Total alpha IDs to process: {self.total}")
 

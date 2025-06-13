@@ -136,16 +136,16 @@ def calculate_correlations(
                 )
                 logger.info(f"[alpha_prune.py] Alpha {alpha_id} (region: {region}) max correlation: {max_corr}")
                 
-                if max_corr < corr_threshold:
+                if max_corr < corr_threshold and not (max_corr == 0.0 and len(temp_alpha_ids[region]) > 1):
                     filtered_alphas[region].append(alpha_id)
                     logger.info(f"[alpha_prune.py] Alpha {alpha_id} passed filter (correlation {max_corr} < {corr_threshold})")
                 else:
-                    logger.info(f"[alpha_prune.py] Alpha {alpha_id} filtered out (correlation {max_corr} >= {corr_threshold})")
+                    logger.info(f"[alpha_prune.py] Alpha {alpha_id} filtered out (correlation {max_corr} >= {corr_threshold} or (max_corr=0.0 and region has {len(temp_alpha_ids[region])} alphas))")
             except Exception as e:
                 logger.error(f"[alpha_prune.py] Failed to calculate correlation for alpha {alpha_id}: {e}")
 
             temp_alpha_ids[region].pop(0)
 
-        logger.info(f"Finished region: {region}, selected {len(filtered_alphas[region])}/{alpha_count} alphas")
+        logger.info(f"[alpha_prune.py]Finished region: {region}, selected {len(filtered_alphas[region])}/{alpha_count} alphas")
 
     return filtered_alphas
