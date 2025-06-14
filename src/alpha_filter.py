@@ -370,6 +370,20 @@ class AlphaFilter:
         # 筛选符合 fitness 和 sharpe 条件的 alpha
         alpha_result = self.filter_alphas(df, min_fitness, min_sharpe, ['trade_when'])
 
+        # 检查所有region文件是否已存在
+        regions = {alpha['settings']['region'] for alpha in alpha_result}
+        self.logger.info(f"Found regions in alpha_result: {regions}")
+        all_files_exist = True
+        for region in regions:
+            file_path = os.path.join(self.data_dir, f"simulated_alphas_{region}.csv.{self.date_str}")
+            if not os.path.exists(file_path):
+                all_files_exist = False
+                break
+
+        if all_files_exist:
+            self.logger.info(f"All region files already exist for date {self.date_str}, skipping processing")
+            return
+
         # 使用筛选后的 alpha 生成比较数据
         self.generate_comparison_data(alpha_result)
 
