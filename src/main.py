@@ -67,6 +67,7 @@ def main():
     data_dir = os.path.join(project_root, 'data')
     output_dir = os.path.join(project_root, 'output')
     # 实例化 ProcessSimulatedAlphas 并启动调度
+    """
     processor = ProcessSimulatedAlphas(
         data_dir, 
         output_dir, 
@@ -86,6 +87,7 @@ def main():
         min_sharpe=1.2,
         corr_threshold=0.7
     )
+    """
 
     # 启动模拟管理
     logger.info("Starting simulation management...")
