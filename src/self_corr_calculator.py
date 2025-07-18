@@ -140,12 +140,13 @@ def get_alpha_pnls(
         if total_alphas > 1 and (idx % max(1, int(total_alphas * 0.1)) == 0 or idx == 1 or idx == total_alphas):
             # 检查 username 和 password 是否为 None
             if username is not None and password is not None:
-                new_sess = sign_in(username, password)
-                if new_sess is None:
-                    logger.error("Failed to re-authenticate session, continuing with existing session")
-                else:
-                    sess = new_sess
-                    logger.info("Session re-authenticated successfully")
+                if not (idx == total_alphas or total_alphas < 1000):
+                    new_sess = sign_in(username, password)
+                    if new_sess is None:
+                        logger.error("Failed to re-authenticate session, continuing with existing session")
+                    else:
+                        sess = new_sess
+                        logger.info("Session re-authenticated successfully")
             else:
                 logger.error("Username or password is None, skipping re-authentication and continuing with existing session")
             elapsed = time.time() - start_time

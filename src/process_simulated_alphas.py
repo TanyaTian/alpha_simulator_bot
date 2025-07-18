@@ -1,6 +1,7 @@
 import time
 import pandas as pd
 import requests
+import urllib3
 import schedule
 import threading
 import os
@@ -285,7 +286,14 @@ class ProcessSimulatedAlphas:
                     continue
 
             self.logger.info(f"[{self.idx}/{self.total}] Checking alphaId: {alpha_id}")
-            result = self.get_check_submission(self.session, alpha_id)
+            try:
+                result = self.get_check_submission(self.session, alpha_id)
+            except (requests.exceptions.ConnectionError, urllib3.exceptions.ProtocolError) as e:
+                self.logger.error(f"Network error processing alphaId {alpha_id}: {str(e)}")
+                self.alpha_ids.insert(0, alpha_id)  # 将当前alpha_id放回队列开头
+                self.idx -= 1  # 回滚计数
+                time.sleep(30)  # 等待30秒后重试
+                continue  # 跳过当前循环
 
             # 处理所有可能的返回情况
             if result == "sleep" or (isinstance(result, tuple) and result[0] != result[0]) or result == "fail" or result == "error":
