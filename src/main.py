@@ -81,7 +81,7 @@ def main():
         init_date, 
         signal_manager)          
     processor.manage_process()
-    """
+    
     
     # 初始化 AlphaFilter
     alpha_filter = AlphaFilter(username, password, data_dir=data_dir, signal_manager=signal_manager)
@@ -92,7 +92,7 @@ def main():
         min_sharpe=1.2,
         corr_threshold=0.75
     )
-    """
+    
     # 启动模拟管理
     logger.info("Starting simulation management...") 
     simulator.manage_simulations()

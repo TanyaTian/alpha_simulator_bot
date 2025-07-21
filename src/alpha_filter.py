@@ -141,31 +141,32 @@ class AlphaFilter:
                         'id': row['id'],
                         'settings': settings,
                         'sharpe': sharpe,
-                        'abs_sharpe': abs(sharpe)  # 添加绝对值字段用于排序
+                        'fitness': fitness,
+                        'abs_fitness': abs(fitness)  # 添加fitness绝对值字段用于排序
                     })
 
             except Exception as e:
                 self.logger.warning(f"Failed to process alpha {row['id']}: {e}, raw is data: {is_str[:100]}...")
                 continue
 
-        # 按 sharpe 绝对值从小到大排序
-        alpha_result.sort(key=lambda x: x['abs_sharpe'])
+        # 按 fitness 绝对值从小到大排序
+        alpha_result.sort(key=lambda x: x['abs_fitness'])
         
-        # 移除临时添加的 abs_sharpe 字段
+        # 移除临时添加的 abs_fitness 字段
         for item in alpha_result:
-            item.pop('abs_sharpe', None)
+            item.pop('abs_fitness', None)
         
         # 打印前3个和后3个alpha的详情
         if len(alpha_result) > 0:
-            self.logger.info("First 3 alphas:")
+            self.logger.info("First 3 alphas by fitness:")
             for alpha in alpha_result[:3]:
-                self.logger.info(f"ID: {alpha['id']}, sharpe: {alpha['sharpe']}, fitness: {alpha['settings'].get('fitness', 'N/A')}")
+                self.logger.info(f"ID: {alpha['id']}, fitness: {alpha['fitness']}, sharpe: {alpha['sharpe']}")
             
-            self.logger.info("Last 3 alphas:") 
+            self.logger.info("Last 3 alphas by fitness:") 
             for alpha in alpha_result[-3:]:
-                self.logger.info(f"ID: {alpha['id']}, sharpe: {alpha['sharpe']}, fitness: {alpha['settings'].get('fitness', 'N/A')}")
+                self.logger.info(f"ID: {alpha['id']}, fitness: {alpha['fitness']}, sharpe: {alpha['sharpe']}")
 
-        self.logger.info(f"Filtered {len(alpha_result)} alphas (fitness >= {min_fitness}, sharpe >= {min_sharpe}), sorted by sharpe")
+        self.logger.info(f"Filtered {len(alpha_result)} alphas (fitness >= {min_fitness}, sharpe >= {min_sharpe}), sorted by fitness")
         return alpha_result
 
     def generate_comparison_data(self, alpha_result: List[Dict]) -> None:

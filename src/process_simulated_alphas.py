@@ -109,9 +109,18 @@ class ProcessSimulatedAlphas:
                             self.logger.warning(f"Failed to parse alpha {row.get('id')}: {e}")
                             continue
                 
-                # 按sharpe值从小到大排序
-                alpha_result.sort(key=lambda x: x['is'].get('sharpe', 0))
-                self.logger.info(f"Loaded and sorted {len(alpha_result)} alphas from stone_bag file")
+                # 按fitness值从小到大排序
+                alpha_result.sort(key=lambda x: x['is'].get('fitness', 0))
+                self.logger.info(f"Loaded and sorted {len(alpha_result)} alphas from stone_bag file by fitness")
+                if len(alpha_result) > 0:
+                    self.logger.info("First 3 alphas by fitness:")
+                    for alpha in alpha_result[:3]:
+                        self.logger.info(f"ID: {alpha['id']}, fitness: {alpha['is'].get('fitness', 0)}")
+                    
+                    self.logger.info("Last 3 alphas by fitness:") 
+                    for alpha in alpha_result[-3:]:
+                        self.logger.info(f"ID: {alpha['id']}, fitness: {alpha['is'].get('fitness', 0)}")
+
             
             # 4. 调用alpha_prune.py方法
             if alpha_result:
@@ -424,9 +433,9 @@ class ProcessSimulatedAlphas:
                             self.logger.warning(f"Failed to parse alpha {row.get('id')}: {e}")
                             continue
                 
-                # 按sharpe值从小到大排序
-                alpha_result.sort(key=lambda x: x['is'].get('sharpe', 0))
-                self.logger.info(f"Loaded and sorted {len(alpha_result)} alphas from stone_bag file")
+                # 按fitness值从小到大排序
+                alpha_result.sort(key=lambda x: x['is'].get('fitness', 0))
+                self.logger.info(f"Loaded and sorted {len(alpha_result)} alphas from stone_bag file by fitness")
             
             # 4. 调用alpha_prune.py方法
             if alpha_result:
@@ -532,17 +541,17 @@ if os.path.exists(stone_bag_file):
                 logger.warning(f"Failed to parse alpha {row.get('id')}: {e}")
                 continue
     
-    # 按sharpe值从小到大排序
-    alpha_result.sort(key=lambda x: x['is'].get('sharpe', 0))
-    logger.info(f"Loaded and sorted {len(alpha_result)} alphas from stone_bag file")
+    # 按fitness值从小到大排序
+    alpha_result.sort(key=lambda x: x['is'].get('fitness', 0))
+    logger.info(f"Loaded and sorted {len(alpha_result)} alphas from stone_bag file by fitness")
     if len(alpha_result) > 0:
-        logger.info("First 3 alphas:")
+        logger.info("First 3 alphas by fitness:")
         for alpha in alpha_result[:3]:
-            logger.info(f"ID: {alpha['id']}, sharpe: {alpha['is'].get('sharpe', 0)}")
+            logger.info(f"ID: {alpha['id']}, fitness: {alpha['is'].get('fitness', 0)}")
         
-        logger.info("Last 3 alphas:") 
+        logger.info("Last 3 alphas by fitness:") 
         for alpha in alpha_result[-3:]:
-            logger.info(f"ID: {alpha['id']}, sharpe: {alpha['is'].get('sharpe', 0)}")
+            logger.info(f"ID: {alpha['id']}, fitness: {alpha['is'].get('fitness', 0)}")
 
 
 # 4. 调用alpha_prune.py方法
