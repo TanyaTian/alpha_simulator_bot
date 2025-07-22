@@ -475,11 +475,14 @@ class ProcessSimulatedAlphas:
         schedule.every().day.at("12:30").do(job).tag('daily_alpha_task')
 
         def run_scheduler():
+            i = 0
             while self._scheduler_running:  # 使用标志位控制循环
                 schedule.run_pending()
                 # 记录下次运行时间
-                next_run = schedule.next_run()
-                self.logger.info(f"Next scheduled task in: {(next_run - datetime.now()).total_seconds()/3600:.2f} hours")
+                if i % 60 == 0 :
+                    next_run = schedule.next_run()
+                    self.logger.info(f"Next scheduled task in: {(next_run - datetime.now()).total_seconds()/3600:.2f} hours")
+                i += 1
                 time.sleep(1)
             self.logger.info("Scheduler thread stopped")
 
