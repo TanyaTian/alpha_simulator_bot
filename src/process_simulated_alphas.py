@@ -404,6 +404,9 @@ class ProcessSimulatedAlphas:
             return
 
         self.logger.info("Starting daily schedule...")
+        # 获取并记录下次运行时间
+        next_run = schedule.next_run()
+        self.logger.info(f"Next scheduled task will run at: {next_run}")
         self._scheduler_running = True
         def job():
             self.logger.info("Scheduled task triggered at 12:30.")
@@ -474,6 +477,9 @@ class ProcessSimulatedAlphas:
         def run_scheduler():
             while self._scheduler_running:  # 使用标志位控制循环
                 schedule.run_pending()
+                # 记录下次运行时间
+                next_run = schedule.next_run()
+                self.logger.info(f"Next scheduled task in: {(next_run - datetime.now()).total_seconds()/3600:.2f} hours")
                 time.sleep(1)
             self.logger.info("Scheduler thread stopped")
 
