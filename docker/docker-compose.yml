@@ -11,3 +11,5 @@ services:
       - ../output:/output  # 新增挂载
     command: python main.py
     stop_grace_period: 60s  # 设置 60 秒超时
+    extra_hosts:
+      - "host.docker.internal:host-gateway"  # 👈 让容器能通过这个名字访问宿主机
