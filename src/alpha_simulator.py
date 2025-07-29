@@ -10,12 +10,8 @@ from pytz import timezone
 from logger import Logger  
 from datetime import datetime, timedelta
 from signal_manager import SignalManager
-
-# 获取美国东部时间
-eastern = timezone('US/Eastern')
-fmt = '%Y-%m-%d'
-loc_dt = datetime.now(eastern)
-print("Current time in Eastern is", loc_dt.strftime(fmt))
+from dao import SimulationTasksDAO  # 新增导入
+from config_manager import config_manager
 
 class AlphaSimulator:
     """Alpha模拟器类，用于管理量化策略的模拟过程"""
@@ -28,7 +24,7 @@ class AlphaSimulator:
         "state_file": "simulator_state.json"
     }
 
-    def __init__(self, max_concurrent, username, password, batch_number_for_every_queue, batch_size=10, signal_manager=None):
+    def __init__(self, signal_manager=None):
         """初始化模拟器
 
         Args:
@@ -48,6 +44,12 @@ class AlphaSimulator:
         else:
             self.logger.warning("未提供 SignalManager，AlphaSimulator 无法注册信号处理函数")
 
+        # 注册配置观察者
+        self._config_observer_handle = config_manager.on_config_change(self._handle_config_change)
+        
+        # 从配置中心获取参数
+        self._load_config_from_manager()
+        
         # 构建基础路径
         script_dir = os.path.dirname(os.path.abspath(__file__))
         project_root = os.path.dirname(script_dir)
@@ -64,16 +66,19 @@ class AlphaSimulator:
         # 关键文件存在性验证
         self._validate_critical_files()
 
-        # 其他属性初始化
-        self.max_concurrent = max_concurrent
+        # 创建 Logger 实例
+        self.logger = Logger()
+
+        # 注册信号处理
+        if signal_manager:
+            signal_manager.add_handler(self.signal_handler)
+        else:
+            self.logger.warning("未提供 SignalManager，AlphaSimulator 无法注册信号处理函数")
+
+        # 初始化任务队列
         self.active_simulations = []
         self.active_update_time = time.time()
-        self.username = username
-        self.password = password
-        self.session = self.sign_in(username, password)
         self.sim_queue_ls = []
-        self.batch_number_for_every_queue = batch_number_for_every_queue
-        self.batch_size = batch_size  # 存储 batch_size 作为实例变量
         self.lock = threading.Lock()  # 🔒 文件写入锁
         self.task_queue = queue.Queue()
 
@@ -177,27 +182,33 @@ class AlphaSimulator:
         rotation_thread.start()
         self.logger.info("Output file rotation thread started, checking every 10 minutes")
 
-    def sign_in(self, username, password):
-        """登录WorldQuant BRAIN平台"""
-        s = requests.Session()
-        s.auth = (username, password)
-        count = 0
-        count_limit = 30
-
-        while True:
-            try:
-                response = s.post('https://api.worldquantbrain.com/authentication')
-                response.raise_for_status()
-                break
-            except:
-                count += 1
-                self.logger.error("Connection down, trying to login again...")
-                time.sleep(15)
-                if count > count_limit:
-                    self.logger.error(f"{username} failed too many times, returning None.")
-                    return None
-        self.logger.info("Login to BRAIN successfully.")
-        return s
+    def _load_config_from_manager(self):
+        """从配置中心加载运行时参数"""
+        config = config_manager._config  # 直接访问内部配置
+        
+        # 加载核心参数（带默认值）
+        self.max_concurrent = config.get('max_concurrent', 5)
+        self.batch_number_for_every_queue = config.get('batch_number_for_every_queue', 100)
+        self.batch_size = config.get('batch_size', 10)
+        
+        # 使用配置中心的session
+        self.session = config_manager.get_session()
+        
+        self.logger.info(f"Loaded config: max_concurrent={self.max_concurrent}, "
+                        f"batch_number_for_every_queue={self.batch_number_for_every_queue}, "
+                        f"batch_size={self.batch_size}")
+    
+    def _handle_config_change(self, new_config):
+        """配置变更回调处理"""
+        self._load_config_from_manager()
+        self.logger.info("Configuration reloaded due to config center update")
+    
+    def __del__(self):
+        """析构函数清理观察者注册"""
+        if hasattr(self, '_config_observer_handle'):
+            observer_list = config_manager._observers
+            if self._handle_config_change in observer_list:
+                observer_list.remove(self._handle_config_change)
 
     def manage_input_files(self):
         """管理输入文件，当主文件为空时切换到下一个编号的文件"""
@@ -412,7 +423,8 @@ class AlphaSimulator:
                 # 如果重试次数超过 35 次，重新登录并跳出循环
                 if count > 35:
                     # 调用 sign_in 方法重新登录
-                    self.session = self.sign_in(self.username, self.password)
+                    if config_manager.renew_session():
+                        self.session = config_manager.get_session()
                     self.logger.error("Error occurred too many times, skipping this alpha batch and re-logging in.")
                     break
 
@@ -601,6 +613,20 @@ class AlphaSimulator:
             if status != "COMPLETE":
                 self.logger.info("Simulation not complete. Will check again later.")
 
+            # 插入所有child到simulation_tasks_table
+            if children:
+                dao = SimulationTasksDAO()
+                data_list = [
+                    {
+                        'child_id': child,
+                        'submit_time': datetime.now(),  # 使用当前时间作为提交时间
+                        'status': 'pending',  # 默认状态
+                        'query_attempts': 0,  # 初始查询次数为0
+                        'last_query_time': None  # 初始无查询时间
+                    }
+                    for child in children
+                ]
+                dao.batch_insert(data_list)  # 批量插入
             return children
 
         except requests.exceptions.HTTPError as e:
@@ -614,11 +640,13 @@ class AlphaSimulator:
                 return None
             else:
                 self.logger.error(f"Failed to fetch simulation progress: {e}")
-                self.session = self.sign_in(self.username, self.password)
+                if config_manager.renew_session():
+                    self.session = config_manager.get_session()
                 return None
         except requests.exceptions.RequestException as e:
             self.logger.error(f"Failed to fetch simulation progress: {e}")
-            self.session = self.sign_in(self.username, self.password)
+            if config_manager.renew_session():
+                self.session = config_manager.get_session()
             return None
 
 
@@ -722,7 +750,8 @@ class AlphaSimulator:
                         self.logger.error(f"Max retries reached for child {child}. Skipping...")
                         if "401" in str(e) or "403" in str(e):
                             self.logger.info("Authentication error detected. Re-signing in...")
-                            self.session = self.sign_in(self.username, self.password)
+                            if config_manager.renew_session():
+                                self.session = config_manager.get_session()
                         break
                 except ValueError as e:
                     self.logger.error(f"Invalid JSON response for child {child}: {e}")
@@ -822,13 +851,13 @@ class AlphaSimulator:
             self.process_children_async(children)
             self.active_update_time = time.time()
 
-        self.logger.info(f"Total {count} simulations still in progress for account {self.username}.")
+        self.logger.info(f"Total {count} simulations still in progress for account {config_manager._config['username']}.")
 
     def save_state(self):
         """保存当前状态"""
         state = {
             "active_simulations": self.active_simulations,
-            "timestamp": datetime.now(eastern).strftime(self.TIMESTAMP_FORMAT)
+            "timestamp": datetime.now().strftime(self.TIMESTAMP_FORMAT)
         }
         with open(self.state_file, 'w') as f:
             json.dump(state, f)
@@ -853,6 +882,6 @@ class AlphaSimulator:
             while self.running:
                 self.check_simulation_status()
                 self.load_new_alpha_and_simulate()
-                time.sleep(3)
+                time.sleep(30)
         except KeyboardInterrupt:
             self.logger.info("Manual interruption detected.")

@@ -48,7 +48,7 @@ class Logger:
 
         # 创建 logger 实例
         self.logger = logging.getLogger("AlphaSimulatorBot")
-        self.logger.setLevel(logging.INFO)  # 设置默认日志级别
+        self.logger.setLevel(logging.DEBUG)  # 设置默认日志级别
         self.logger.handlers.clear()  # 清除现有处理器，避免重复
         self.logger.addHandler(handler)
         self.logger.addHandler(console_handler)
