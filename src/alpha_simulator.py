@@ -882,6 +882,6 @@ class AlphaSimulator:
             while self.running:
                 self.check_simulation_status()
                 self.load_new_alpha_and_simulate()
-                time.sleep(30)
+                time.sleep(3)
         except KeyboardInterrupt:
             self.logger.info("Manual interruption detected.")
