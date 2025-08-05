@@ -2,6 +2,7 @@ import configparser
 import os
 import csv
 import pandas as pd
+import ast
 from datetime import datetime
 from pytz import timezone
 from logger import Logger  # 导入 Logger 类
@@ -53,6 +54,16 @@ def load_config(config_file="config/config.ini"):
             return None
 
         config.read(config_path)
+        
+        # Parse region_set as a list
+        region_set_str = config.get('Credentials', 'region_set', fallback='US')
+        try:
+            region_set = ast.literal_eval(region_set_str)
+            if not isinstance(region_set, list):
+                raise ValueError(f"Expected list for region_set, got {type(region_set)}")
+        except (ValueError, SyntaxError) as e:
+            logger.error(f"Error parsing region_set: {e}. Using default ['US']")
+            region_set = ['US']
 
         config_data = {
             'username': config.get('Credentials', 'username'),
@@ -60,7 +71,8 @@ def load_config(config_file="config/config.ini"):
             'max_concurrent': config.getint('Credentials', 'max_concurrent'),
             'batch_number_for_every_queue': config.getint('Credentials', 'batch_number_for_every_queue'),
             'batch_size': config.getint('Credentials', 'batch_size'),
-            'init_date_str': config.get('Credentials', 'init_date_str')
+            'init_date_str': config.get('Credentials', 'init_date_str'),
+            'region_set': region_set
         }
 
         # 日志记录参数值，方便调试

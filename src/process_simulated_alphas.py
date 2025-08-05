@@ -247,9 +247,17 @@ class ProcessSimulatedAlphas:
                 except (TypeError, ValueError) as e:
                     self.logger.warning(f"Failed to convert sharpe for alpha {row['id']}: {e}, raw sharpe: {is_data.get('sharpe')}")
                     continue
+
+                try:
+                    checks = is_data.get('checks', [])
+                    has_failed_checks = any(check['result'] == 'FAIL' for check in checks)
+                except Exception as e:
+                    self.logger.warning(f"Failed to process checks for alpha {row['id']}: {str(e)}")
+                    has_failed_checks = True  # 视为有失败检查
+
                 #self.logger.info(f"read_and_filter_alpha_ids alpha {row['id']}:sharpe={sharpe}, fitness={fitness}")
                 # 检查 fitness 和 sharpe 是否满足条件
-                if fitness >= self.SPECIFIED_FITNESS and sharpe >= self.SPECIFIED_SHARPE:
+                if fitness >= self.SPECIFIED_FITNESS and sharpe >= self.SPECIFIED_SHARPE and not has_failed_checks:
                     # 筛选符合条件的alpha Id
                     alpha_ids.append(row['id'])
                     # 保存完整行数据

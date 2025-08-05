@@ -6,11 +6,13 @@ import os
 import ast
 import json
 import threading
+from collections import deque
 from pytz import timezone
 from logger import Logger  
 from datetime import datetime, timedelta
 from signal_manager import SignalManager
-from dao import SimulationTasksDAO  # 新增导入
+from dao import SimulationTasksDAO  
+from dao import AlphaListPendingSimulatedDAO
 from config_manager import config_manager
 
 class AlphaSimulator:
@@ -75,6 +77,10 @@ class AlphaSimulator:
         else:
             self.logger.warning("未提供 SignalManager，AlphaSimulator 无法注册信号处理函数")
 
+        # 初始化DAO
+        self.alpha_list_pending_simulated_dao = AlphaListPendingSimulatedDAO()
+        self.simulation_task_dao = SimulationTasksDAO()
+        
         # 初始化任务队列
         self.active_simulations = []
         self.active_update_time = time.time()
@@ -190,6 +196,12 @@ class AlphaSimulator:
         self.max_concurrent = config.get('max_concurrent', 5)
         self.batch_number_for_every_queue = config.get('batch_number_for_every_queue', 100)
         self.batch_size = config.get('batch_size', 10)
+        
+        # 加载region_set参数，使用collections.deque实现循环队列
+        region_set = config.get('region_set', ['US'])
+        if not isinstance(region_set, list):
+            region_set = ['US']
+        self.region_set = deque(region_set)
         
         # 使用配置中心的session
         self.session = config_manager.get_session()
@@ -463,7 +475,7 @@ class AlphaSimulator:
                 self.logger.error(f"Invalid alpha data, missing required fields: {alpha}")
                 continue
 
-            # 检查 settings 是否为字典（理论上总是字典）
+            # 直接使用 settings 字段（数据库返回的是字典）
             settings = alpha['settings']
             if not isinstance(settings, dict):
                 self.logger.error(f"Unexpected type for settings: {type(settings)}. Expected dict. Skipping this alpha.")
@@ -483,25 +495,23 @@ class AlphaSimulator:
         
     def load_new_alpha_and_simulate(self):
         """
-        加载并模拟新的 alpha，每次从队列中弹出 self.batch_size 个 alpha 进行批量模拟。
-        确保 alpha_list 中的所有 alpha 具有相同的 'region' 和 'universe' 设置。
+        从数据库批量查询待回测alpha，然后进行模拟
+        
+        使用新方法fetch_pending_alphas_in_batches从数据库批量获取待回测alpha
+        每次查询的数量为self.batch_size，region为region_set的第一个元素
+        调用后轮转region_set，将当前region移到最后一个
 
         Attributes:
-            self.sim_queue_ls (list): 包含 alpha 数据的队列，每个元素是一个字典，包含 type、settings 和 regular 字段
-            self.batch_size (int): 每次模拟的 alpha 批量大小
+            self.batch_size (int): 每次查询的数量
+            self.region_set (deque): 地区循环队列
+            self.dao (AlphaListPendingSimulatedDAO): 数据访问对象
             self.max_concurrent (int): 最大并发模拟数量
-            self.active_simulations (list): 正在进行的模拟任务列表，存储 location_url
-            self.active_update_time (float): 最近一次模拟更新的时间戳
+            self.active_simulations (list): 正在进行的模拟任务列表
             self.logger (Logger): 日志记录器
         """
         # 检查运行状态，如果 running 为 False，则退出
         if not self.running:
             return
-
-        # 如果队列为空，从 CSV 文件中读取新的 alpha 数据
-        if len(self.sim_queue_ls) < 1:
-            self.logger.info("Simulation queue is empty, reading new alphas from CSV...")
-            self.sim_queue_ls = self.read_alphas_from_csv_in_batches(self.batch_number_for_every_queue)
 
         # 如果当前正在进行的模拟任务数量达到最大并发限制，等待 2 秒后退出
         if len(self.active_simulations) >= self.max_concurrent:
@@ -509,78 +519,73 @@ class AlphaSimulator:
             time.sleep(2)
             return
 
-        self.logger.info('Loading new alphas for simulation...')
+        self.logger.info('Loading new alphas for simulation from database...')
         try:
-            # 每次从队列中弹出 alpha，组成 alpha_list
+            # 使用新方法从数据库批量获取待回测alpha
+            db_records = self.fetch_pending_alphas_in_batches(self.batch_size)
+            
+            # 如果没有获取到alpha，直接返回
+            if not db_records:
+                self.logger.info("No pending alphas fetched from database.")
+                return
+
+            # 提取需要模拟的数据
             alpha_list = []
-
-            # 如果队列为空，直接返回
-            if not self.sim_queue_ls:
-                self.logger.info("No alphas available in the queue.")
-                return
-
-            # 弹出第一个 alpha，设置基准 region 和 universe
-            first_alpha = self.sim_queue_ls.pop(0)
-            alpha_list.append(first_alpha)
-            base_region = first_alpha['settings'].get('region')
-            base_universe = first_alpha['settings'].get('universe')
-
-            # 验证第一个 alpha 的 region 和 universe 是否存在
-            if base_region is None or base_universe is None:
-                self.logger.error(f"First alpha missing 'region' or 'universe': {first_alpha}")
-                return
-
-            self.logger.info(f"Base region: {base_region}, Base universe: {base_universe}")
-
-            # 继续弹出 alpha，直到达到 batch_size 或遇到不一致的 region/universe
-            while len(alpha_list) < self.batch_size and self.sim_queue_ls:
-                # 检查下一个 alpha 的 region 和 universe
-                next_alpha = self.sim_queue_ls[0]  # 查看但不弹出
-                next_region = next_alpha['settings'].get('region')
-                next_universe = next_alpha['settings'].get('universe')
-
-                # 验证 region 和 universe 是否存在
-                if next_region is None or next_universe is None:
-                    self.logger.error(f"Alpha missing 'region' or 'universe': {next_alpha}")
-                    self.sim_queue_ls.pop(0)  # 移除无效 alpha
+            record_ids = []
+            for record in db_records:
+                try:
+                    # 尝试类型转换settings字段
+                    if 'settings' in record:
+                        if isinstance(record['settings'], str):
+                            try:
+                                record['settings'] = ast.literal_eval(record['settings'])
+                            except (ValueError, SyntaxError) as e:
+                                # 转换失败时记录错误并跳过此记录
+                                self.logger.error(f"类型转换失败 (record id={record['id']}): {e}")
+                                continue
+                        elif not isinstance(record['settings'], dict):
+                            self.logger.error(f"settings字段类型错误 (record id={record['id']}): 期望字典类型, 实际是 {type(record['settings'])}")
+                            continue
+                    
+                    # 构造alpha对象
+                    alpha = {
+                        'type': record['type'],
+                        'settings': record['settings'],
+                        'regular': record['regular']
+                    }
+                    alpha_list.append(alpha)
+                    record_ids.append(record['id'])
+                    
+                    # 记录当前批次的 alpha 信息
+                    self.logger.info(f"  - ID: {record['id']}, Alpha: {record['regular'][:50]}... with settings: {record['settings']}")
+                except Exception as e:
+                    self.logger.error(f"处理record时发生错误 (id={record['id']}): {e}")
                     continue
 
-                # 检查是否与基准一致
-                if next_region != base_region or next_universe != base_universe:
-                    self.logger.info(
-                        f"Region/Universe mismatch: {next_region}/{next_universe} does not match base {base_region}/{base_universe}. Stopping batch.")
-                    break
+            # 调用 simulate_alpha，传入 alpha 列表
+            location_url = self.simulate_alpha(alpha_list)
 
-                # 如果一致，弹出并添加到 alpha_list
-                alpha_list.append(self.sim_queue_ls.pop(0))
-
-            # 如果成功弹出 alpha 列表，执行模拟
-            if alpha_list:
-                # 记录当前批次的 alpha 信息
-                self.logger.info(f"Starting simulation for {len(alpha_list)} alphas:")
-                for alpha in alpha_list:
-                    self.logger.info(f"  - Alpha: {alpha['regular'][:50]}... with settings: {alpha['settings']}")
-                self.logger.info(f"Remaining in sim_queue_ls: {len(self.sim_queue_ls)}")
-
-                # 调用 simulate_alpha，传入 alpha 列表
-                location_url = self.simulate_alpha(alpha_list)
-
-                # 如果模拟成功（返回 location_url），将 URL 添加到 active_simulations
-                if location_url:
-                    self.active_simulations.append(location_url)
-                    self.active_update_time = time.time()
-                    self.logger.info(f"Simulation started, location_url: {location_url}")
-                else:
-                    self.logger.warning("Simulation failed, no location_url returned")
+            # 如果模拟成功（返回 location_url），将 URL 添加到 active_simulations
+            if location_url:
+                self.active_simulations.append(location_url)
+                self.active_update_time = time.time()
+                self.logger.info(f"Simulation started, location_url: {location_url}")
+                # 更新数据库状态为成功
+                self.alpha_list_pending_simulated_dao.batch_update_status_by_ids(record_ids, 'sent')
             else:
-                self.logger.info("No alphas available for simulation in this batch")
+                self.logger.warning("Simulation failed, no location_url returned")
+                # 更新数据库状态为失败
+                self.alpha_list_pending_simulated_dao.batch_update_status_by_ids(record_ids, 'failed')
 
-        except IndexError:
-            # 如果队列中没有足够的 alpha，打印信息
-            self.logger.info("No more alphas available in the queue.")
         except Exception as e:
             # 捕获其他异常，记录错误信息
             self.logger.error(f"Error during simulation: {e}")
+            # 尝试更新数据库状态为失败
+            if 'record_ids' in locals() and record_ids:
+                try:
+                    self.alpha_list_pending_simulated_dao.batch_update_status_by_ids(record_ids, 'failed')
+                except Exception as db_error:
+                    self.logger.error(f"Failed to update database status: {db_error}")
     
     def check_simulation_progress(self, simulation_progress_url):
         """
@@ -615,7 +620,6 @@ class AlphaSimulator:
 
             # 插入所有child到simulation_tasks_table
             if children:
-                dao = SimulationTasksDAO()
                 data_list = [
                     {
                         'child_id': child,
@@ -626,7 +630,7 @@ class AlphaSimulator:
                     }
                     for child in children
                 ]
-                dao.batch_insert(data_list)  # 批量插入
+                self.simulation_task_dao.batch_insert(data_list)  # 批量插入
             return children
 
         except requests.exceptions.HTTPError as e:
@@ -871,6 +875,36 @@ class AlphaSimulator:
                 writer.writerows(self.sim_queue_ls)
             self.logger.info(f"Reinserted {len(self.sim_queue_ls)} alphas back to {self.alpha_list_file_path}")
             self.sim_queue_ls = []
+
+    def fetch_pending_alphas_in_batches(self, batch_size):
+        """从数据库批量查询待回测alpha
+        
+        Args:
+            batch_size (int): 每次查询的数量
+            
+        Returns:
+            list: 待回测的alpha列表
+        """
+        if not self.region_set:
+            self.logger.warning("No regions available in region_set")
+            return []
+            
+        # 获取当前region（第一个元素）
+        region = self.region_set[0]
+        self.logger.info(f"Querying pending alphas for region: {region}, batch_size: {batch_size}")
+        
+        # 使用DAO查询数据库
+        alphas = self.alpha_list_pending_simulated_dao.fetch_and_lock_pending_by_region(
+            region = region,
+            limit = batch_size
+        )
+        
+        # 轮转region_set：将当前region移到最后一个
+        current_region = self.region_set.popleft()
+        self.region_set.append(current_region)
+        self.logger.info(f"Rotated region_set: moved {current_region} to the end")
+        
+        return alphas
 
     def manage_simulations(self):
         """管理整个模拟过程"""

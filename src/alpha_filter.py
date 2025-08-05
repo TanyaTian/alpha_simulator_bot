@@ -136,13 +136,22 @@ class AlphaFilter:
                     except (SyntaxError, ValueError) as e:
                         self.logger.warning(f"Failed to parse alpha {row['id']} settings: {e}, raw data: {settings_str[:100]}...")
                         continue
+                    
+                    # 解析 classifications 列（Python 列表字符串）
+                    classifications_str = row['classifications']
+                    try:
+                        classifications = ast.literal_eval(classifications_str) if classifications_str and classifications_str != '[]' else []
+                    except (SyntaxError, ValueError) as e:
+                        self.logger.warning(f"Failed to parse alpha {row['id']} classifications: {e}, raw data: {classifications_str[:100]}...")
+                        classifications = []
 
                     alpha_result.append({
                         'id': row['id'],
                         'settings': settings,
                         'sharpe': sharpe,
                         'fitness': fitness,
-                        'abs_fitness': abs(fitness)  # 添加fitness绝对值字段用于排序
+                        'abs_fitness': abs(fitness),  # 添加fitness绝对值字段用于排序
+                        'classifications': classifications  # 添加解析后的classifications字段
                     })
 
             except Exception as e:
@@ -152,9 +161,33 @@ class AlphaFilter:
         # 按 fitness 绝对值从小到大排序
         alpha_result.sort(key=lambda x: x['abs_fitness'])
         
-        # 移除临时添加的 abs_fitness 字段
+        # 分离含SINGLE_DATA_SET标志的item并重新排序
+        single_data_set_items = []
+        regular_items = []
+        for item in alpha_result:
+            # 使用item中的classifications字段检查标志
+            if any(cls.get('id') == 'DATA_USAGE:SINGLE_DATA_SET' for cls in item['classifications']):
+                single_data_set_items.append(item)
+            else:
+                regular_items.append(item)
+        
+        # 对含标志的item单独排序（按fitness绝对值）
+        single_data_set_items.sort(key=lambda x: x['abs_fitness'])
+        
+        # 合并两部分：常规item在前，标志item在后
+        alpha_result = regular_items + single_data_set_items
+        
+        # 移除临时添加的 abs_fitness 和 classifications 字段
         for item in alpha_result:
             item.pop('abs_fitness', None)
+            item.pop('classifications', None)  # classifications是临时字段，排序后不再需要
+        
+        # 添加数量统计日志
+        self.logger.info(
+            f"Alpha separation: total={len(alpha_result)}, "
+            f"regular={len(regular_items)}, "
+            f"single_dataset={len(single_data_set_items)}"
+        )
         
         # 打印前3个和后3个alpha的详情
         if len(alpha_result) > 0:

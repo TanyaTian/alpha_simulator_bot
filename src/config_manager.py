@@ -173,3 +173,10 @@ def run_config_server(port=5001):
 
 if __name__ == '__main__':
     run_config_server()
+
+# Example curl commands for testing:
+# 1. Get current config:
+#    curl -X GET http://localhost:5001/config
+#
+# 2. Update config (example updating 'timeout' value):
+#    curl -X POST http://localhost:5001/config/update -H "Content-Type: application/json" -d '{"max_concurrent": 2}'

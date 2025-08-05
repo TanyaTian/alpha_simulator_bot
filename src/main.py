@@ -78,7 +78,7 @@ def main():
     data_dir = os.path.join(project_root, 'data')
     output_dir = os.path.join(project_root, 'output')
     
-    """
+    
     # 实例化 ProcessSimulatedAlphas 并启动调度
     processor = ProcessSimulatedAlphas(
         data_dir, 
@@ -100,7 +100,7 @@ def main():
         min_sharpe=1.2,
         corr_threshold=0.75
     )
-    """
+    
     
     # 使用ConfigManager中的配置启动Poller（无需传参）
     poller = AlphaPoller()
