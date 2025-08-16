@@ -3,5 +3,6 @@ pandas==2.0.3
 requests==2.31.0
 pytz==2023.3
 schedule==1.2.0
-pymysql
+PyMySQL>=1.0.2  # 显式指定版本，确保支持 caching_sha2_password
+cryptography>=3.4  # 添加 cryptography 支持加密认证
 flask
