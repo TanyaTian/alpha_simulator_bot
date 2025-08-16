@@ -118,7 +118,17 @@ class Database:
             db_logger.error(f"❌ Insert failed: table={table}, data={data}, error: {e}")
             return 0
 
-    def batch_insert(self, table, data_list):
+    def batch_insert(self, table, data_list, on_duplicate_update=False):
+        """执行批量插入操作，可选择在发生主键冲突时更新记录
+        
+        参数:
+            table (str): 表名
+            data_list (list): 包含字典的列表，每个字典代表一行数据
+            on_duplicate_update (bool): 是否在冲突时更新记录
+            
+        返回:
+            int: 受影响的行数
+        """
         if not data_list:
             db_logger.warning("Batch insert skipped: empty list.")
             return 0
@@ -131,11 +141,17 @@ class Database:
             keys = ', '.join(f"`{k}`" for k in data_list[0].keys())
             values = ', '.join(['%s'] * len(data_list[0]))
             sql = f"INSERT INTO `{table}` ({keys}) VALUES ({values})"
+            
+            # 添加ON DUPLICATE KEY UPDATE子句
+            if on_duplicate_update:
+                update_clause = ', '.join([f"`{k}`=VALUES(`{k}`)" for k in data_list[0].keys() if k != 'id'])
+                sql += f" ON DUPLICATE KEY UPDATE {update_clause}"
+                db_logger.debug(f"Using ON DUPLICATE KEY UPDATE for batch insert")
 
             with self.connection.cursor() as cursor:
                 affected_rows = cursor.executemany(sql, [tuple(d.values()) for d in data_list])
                 self.connection.commit()
-                db_logger.info(f"Batch insert OK: table={table}, rows={affected_rows}")
+                db_logger.info(f"Batch insert OK: table={table}, rows={affected_rows}, on_duplicate={on_duplicate_update}")
                 return affected_rows
         except Exception as e:
             db_logger.error(f"❌ Batch insert failed: table={table}, error: {e}")

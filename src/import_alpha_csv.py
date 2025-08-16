@@ -171,7 +171,7 @@ if __name__ == '__main__':
 
 # Single priority
 #python src/import_alpha_csv.py path/to/alphas.csv --priority 0
-#python src/import_alpha_csv.py /Users/sujianan/py/consultant/consultant/output/alpha_usa_anl4_vec_row.csv --priority 0
+#python src/import_alpha_csv.py /Users/sujianan/py/consultant/consultant/output/alpha_glb_group_data.csv --priority 0
 
 # Priority range
-#python src/import_alpha_csv.py /Users/sujianan/py/consultant/consultant/output/alpha_atom_0805.csv --priority 2-31
+#python src/import_alpha_csv.py /Users/sujianan/py/consultant/consultant/output/alpha_glb_fnd17_ts.csv --priority 2-30

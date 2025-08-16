@@ -3,13 +3,13 @@
 from database import Database
 from logger import Logger
 
-class SimulatedAlphasDAO:
+class AlphaSignalDAO:
     logger = Logger()
-    TABLE_NAME = 'simulated_alphas_table'
+    TABLE_NAME = 'alpha_signal_table'
 
     def __init__(self):
         self.db = Database()
-        self.logger.debug("SimulatedAlphasDAO initialized")
+        self.logger.debug("AlphaSignalDAO initialized")
 
     def insert(self, data):
         self.logger.debug(f"Inserting simulated alpha: {data}")
@@ -17,17 +17,14 @@ class SimulatedAlphasDAO:
         self.logger.debug(f"Insert result: {result}")
         return result
     
-    def batch_insert(self, data_list, on_duplicate_update=False, chunk_size=1000):
+    def batch_insert(self, data_list, chunk_size=1000):
         self.logger.debug(f"Starting batch insert of {len(data_list)} items")
         total = 0
         try:
             for i in range(0, len(data_list), chunk_size):
                 chunk = data_list[i:i + chunk_size]
-                affected = self.db.batch_insert(
-                    self.TABLE_NAME, 
-                    chunk, 
-                    on_duplicate_update=on_duplicate_update
-                )
+                # 使用ON DUPLICATE KEY UPDATE功能处理主键冲突
+                affected = self.db.batch_insert(self.TABLE_NAME, chunk, on_duplicate_update=True)
                 total += affected
                 self.logger.debug(f"Inserted chunk {i}-{i+chunk_size}, affected: {affected}")
             self.logger.debug(f"Total batch insert affected: {total}")
@@ -118,5 +115,40 @@ class SimulatedAlphasDAO:
             self.logger.error(f"Error getting max datetime: {e}")
             raise e
 
+    def datetime_exists(self, datetime_str):
+        """检查指定日期时间在数据库中是否已存在
+        
+        参数:
+            datetime_str (str): 要检查的日期时间字符串
+            
+        返回:
+            bool: 如果存在返回True，否则返回False
+        """
+        self.logger.debug(f"Checking if datetime exists: {datetime_str}")
+        try:
+            count = self.count_by_datetime(datetime_str)
+            return count > 0
+        except Exception as e:
+            self.logger.error(f"Error checking datetime existence: {e}")
+            return False
+    
+    def region_and_datetime_exists(self, region, datetime_str):
+        """检查指定region和日期时间在数据库中是否已存在
+        
+        参数:
+            region (str): 要检查的region
+            datetime_str (str): 要检查的日期时间字符串
+            
+        返回:
+            bool: 如果存在返回True，否则返回False
+        """
+        self.logger.debug(f"Checking if region '{region}' and datetime '{datetime_str}' exist")
+        try:
+            count = self.count_by_region_and_datetime(region, datetime_str)
+            return count > 0
+        except Exception as e:
+            self.logger.error(f"Error checking region and datetime existence: {e}")
+            return False
+            
     def close(self):
         self.db.connection.close()

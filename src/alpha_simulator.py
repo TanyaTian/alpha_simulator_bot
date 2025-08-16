@@ -44,7 +44,7 @@ class AlphaSimulator:
         if signal_manager:
             signal_manager.add_handler(self.signal_handler)
         else:
-            self.logger.warning("未提供 SignalManager，AlphaSimulator 无法注册信号处理函数")
+            self.logger.warning("未提供 SignalManager,AlphaSimulator 无法注册信号处理函数")
 
         # 注册配置观察者
         self._config_observer_handle = config_manager.on_config_change(self._handle_config_change)
@@ -61,12 +61,7 @@ class AlphaSimulator:
         os.makedirs(self.data_dir, exist_ok=True)
 
         # 构建文件路径体系
-        self.alpha_list_file_path = os.path.join(self.data_dir, self.FILE_CONFIG["input_file"])
-        self.fail_alphas = os.path.join(self.data_dir, self.FILE_CONFIG["fail_file"])
         self.state_file = os.path.join(self.data_dir, self.FILE_CONFIG["state_file"])
-
-        # 关键文件存在性验证
-        self._validate_critical_files()
 
         # 创建 Logger 实例
         self.logger = Logger()
@@ -75,7 +70,7 @@ class AlphaSimulator:
         if signal_manager:
             signal_manager.add_handler(self.signal_handler)
         else:
-            self.logger.warning("未提供 SignalManager，AlphaSimulator 无法注册信号处理函数")
+            self.logger.warning("未提供 SignalManager,AlphaSimulator 无法注册信号处理函数")
 
         # 初始化DAO
         self.alpha_list_pending_simulated_dao = AlphaListPendingSimulatedDAO()
@@ -84,26 +79,7 @@ class AlphaSimulator:
         # 初始化任务队列
         self.active_simulations = []
         self.active_update_time = time.time()
-        self.sim_queue_ls = []
         self.lock = threading.Lock()  # 🔒 文件写入锁
-        self.task_queue = queue.Queue()
-
-        # 启动 worker 线程
-        try:
-            self.worker_thread = threading.Thread(target=self.worker)
-            self.worker_thread.daemon = True
-            self.worker_thread.start()
-            self.logger.info("Worker thread started")
-        except Exception as e:
-            self.logger.error(f"Failed to start worker thread: {e}")
-            raise
-        
-        # 启动文件轮转线程
-        try:
-            self.start_rotation_scheduler()
-        except Exception as e:
-            self.logger.error(f"Failed to start file rotation thread: {e}")
-            raise
 
         # 加载上次未完成的 active_simulations
         self._load_previous_state()
@@ -112,28 +88,6 @@ class AlphaSimulator:
         self.logger.info(f"Received shutdown signal {signum}, , initiating shutdown...")
         self.running = False
         self.save_state()
-        self.shutdown()
-
-    def _validate_critical_files(self):
-        """验证关键输入文件是否存在"""
-        missing_files = []
-
-        if not os.path.exists(self.alpha_list_file_path):
-            missing_files.append(
-                f"主输入文件: {self.alpha_list_file_path}\n"
-                "可能原因:\n"
-                "- 文件尚未生成\n"
-                "- 文件名拼写错误"
-            )
-
-        if missing_files:
-            raise FileNotFoundError(
-                "关键文件缺失:\n\n" +
-                "\n\n".join(missing_files) +
-                "\n\n解决方案建议:\n"
-                "1. 检查data目录结构是否符合预期\n"
-                "2. 确认文件生成流程已执行"
-            )
 
     def _load_previous_state(self):
         if os.path.exists(self.state_file):
@@ -142,51 +96,6 @@ class AlphaSimulator:
                 self.active_simulations = state.get("active_simulations", [])
                 self.logger.info(f"Loaded {len(self.active_simulations)} previous active simulations from state.")
 
-    def rotate_output_file(self):
-        """每天 0 点轮转 output 文件，将前一天的文件重命名为 YYYY-MM-DD 格式"""
-        current_date = datetime.now().date()
-        yesterday = current_date - timedelta(days=1)
-        yesterday_str = yesterday.strftime('%Y-%m-%d')
-        output_file = os.path.join(self.data_dir, self.FILE_CONFIG["output_file"])
-        backup_file = os.path.join(self.data_dir, f'simulated_alphas.csv.{yesterday_str}')
-
-        # 使用文件锁保护文件操作
-        with self.lock:
-            if os.path.exists(output_file):
-                if os.path.exists(backup_file):
-                    os.remove(backup_file)  # 删除旧备份（如果存在）
-                os.rename(output_file, backup_file)
-                self.logger.info(f"Rotated {output_file} to {backup_file}")
-            else:
-                self.logger.warning(f"Output file {output_file} does not exist for rotation")
-
-    def start_rotation_scheduler(self):
-        """启动文件轮转线程，每十分钟检查一次"""
-        def rotation_check_loop():
-            # 记录上一次轮转的日期
-            last_rotation_date = datetime.now().date()
-            self.logger.info("File rotation thread started")
-            
-            while True:
-                # 获取当前日期
-                current_date = datetime.now().date()
-                
-                # 检查是否为新的一天
-                if current_date > last_rotation_date:
-                    self.logger.info(f"New date detected: {current_date}, starting file rotation")
-                    self.rotate_output_file()
-                    # 更新最后轮转日期
-                    last_rotation_date = current_date
-                
-                # 记录休眠开始
-                self.logger.debug("File rotation check completed, sleeping for 10 minutes")
-                # 休眠10分钟（600秒）
-                time.sleep(600)
-        
-        # 启动轮转线程，设置为守护线程
-        rotation_thread = threading.Thread(target=rotation_check_loop, daemon=True)
-        rotation_thread.start()
-        self.logger.info("Output file rotation thread started, checking every 10 minutes")
 
     def _load_config_from_manager(self):
         """从配置中心加载运行时参数"""
@@ -222,167 +131,7 @@ class AlphaSimulator:
             if self._handle_config_change in observer_list:
                 observer_list.remove(self._handle_config_change)
 
-    def manage_input_files(self):
-        """管理输入文件，当主文件为空时切换到下一个编号的文件"""
-        base_name = self.FILE_CONFIG["input_file"].replace('.csv', '')
-        current_file = self.alpha_list_file_path
-        
-        # 检查当前文件是否为空（只有表头或完全为空）
-        try:
-            with open(current_file, 'r') as f:
-                reader = csv.reader(f)
-                header = next(reader, None)  # 读取表头
-                if header is None:  # 完全空文件
-                    self.logger.info("Current input file is completely empty")
-                else:
-                    first_data_row = next(reader, None)  # 尝试读取第一行数据
-                    if first_data_row is not None:  # 有数据行
-                        return False  # 文件不为空，不需要切换
-                    self.logger.info("Current input file has only header but no data")
-        except FileNotFoundError:
-            self.logger.info("Current input file not found")
-            pass  # 文件不存在，继续执行下面的逻辑
-        
-        # 查找下一个可用的文件
-        for i in range(1, 20):
-            next_file = os.path.join(self.data_dir, f"{base_name}_{i}.csv")
-            if os.path.exists(next_file):
-                # 检查目标文件是否为空（只有表头）
-                with open(next_file, 'r') as f:
-                    reader = csv.reader(f)
-                    header = next(reader, None)
-                    if header is None:  # 完全空文件
-                        self.logger.info(f"Found {base_name}_{i}.csv but it's completely empty")
-                        continue
-                    first_data_row = next(reader, None)
-                    if first_data_row is None:  # 只有表头
-                        self.logger.info(f"Found {base_name}_{i}.csv but it has only header")
-                        continue
-                
-                try:
-                    # 删除当前空文件
-                    if os.path.exists(current_file):
-                        os.remove(current_file)
-                    # 重命名下一个文件为当前文件
-                    os.rename(next_file, current_file)
-                    self.logger.info(f"Switched input file to {base_name}_{i}.csv")
-                    return True
-                except OSError as e:
-                    self.logger.error(f"Error switching input files: {e}")
-                    return False
-        
-        # 没有找到可用的下一个文件
-        self.logger.info("No more valid input files available")
-        return False
 
-    def read_alphas_from_csv_in_batches(self, batch_size=50):
-        """从CSV文件中分批读取alphas"""
-        self.logger.debug(f"Starting to read alphas in batches (batch_size={batch_size})")
-        alphas = []
-        temp_file_name = self.alpha_list_file_path + '.tmp'
-        self.logger.debug(f"Using temporary file: {temp_file_name}")
-
-        # 检查并管理输入文件
-        if not os.path.exists(self.alpha_list_file_path):
-            if not self.manage_input_files():
-                return alphas  # 没有更多文件可用，返回空列表
-        else:
-            # 检查文件是否只有表头
-            with open(self.alpha_list_file_path, 'r') as f:
-                reader = csv.reader(f)
-                header = next(reader, None)
-                if header is None:  # 完全空文件
-                    if not self.manage_input_files():
-                        return alphas
-                else:
-                    first_data_row = next(reader, None)
-                    if first_data_row is None:  # 只有表头
-                        if not self.manage_input_files():
-                            return alphas
-
-        with open(self.alpha_list_file_path, 'r') as file, open(temp_file_name, 'w', newline='') as temp_file:
-            reader = csv.DictReader(file)
-            fieldnames = reader.fieldnames
-            self.logger.debug(f"CSV fieldnames: {fieldnames}")
-            if fieldnames is None:  # 完全空文件情况
-                self.logger.warning("Input file has no headers/fieldnames")
-                return alphas
-                
-            # 确保表头包含预期字段
-            expected_fields = {'type', 'settings', 'regular'}
-            if not expected_fields.issubset(set(fieldnames)):
-                self.logger.error(f"Input file missing required fields. Expected: {expected_fields}, found: {fieldnames}")
-                return alphas
-                
-            writer = csv.DictWriter(temp_file, fieldnames=fieldnames)
-            writer.writeheader()
-            self.logger.debug(f"Initialized CSV writer with fieldnames: {fieldnames}")
-
-            self.logger.debug(f"Reading {batch_size} alphas from file")
-            read_count = 0
-            for _ in range(batch_size):
-                try:
-                    row = next(reader)
-                    read_count += 1
-                    if 'settings' in row:
-                        if isinstance(row['settings'], str):
-                            try:
-                                row['settings'] = ast.literal_eval(row['settings'])
-                            except (ValueError, SyntaxError):
-                                self.logger.error(f"Error evaluating settings: {row['settings']}")
-                        elif not isinstance(row['settings'], dict):
-                            self.logger.error(f"Unexpected type for settings: {type(row['settings'])}")
-                    alphas.append(row)
-                except StopIteration:
-                    self.logger.debug(f"Reached end of file after reading {read_count} alphas")
-                    break
-
-            remaining_rows = []
-            for row in reader:
-                if None in row:
-                    self.logger.error(f"Row contains None key: {row}")
-                    continue
-                if not all(field in row for field in fieldnames):
-                    self.logger.error(f"Row missing fields: {row} (expected: {fieldnames})")
-                    continue
-                self.logger.debug(f"Valid row: {row}")
-                remaining_rows.append(row)
-            
-            for row in remaining_rows:
-                try:
-                    writer.writerow(row)
-                except ValueError as e:
-                    self.logger.error(f"Failed to write row: {row}. Error: {e}")
-                    raise
-
-        try:
-            os.replace(temp_file_name, self.alpha_list_file_path)
-            self.logger.info(f"Successfully replaced {self.alpha_list_file_path} with new data")
-        except OSError as e:
-            if hasattr(e, 'winerror') and e.winerror == 5:  # 拒绝访问
-                self.logger.error("Access denied when replacing file. Trying to delete original and rename temporary.")
-                try:
-                    os.remove(self.alpha_list_file_path)
-                    os.rename(temp_file_name, self.alpha_list_file_path)
-                    self.logger.info("Successfully handled file replacement after access denied")
-                except OSError as e2:
-                    self.logger.error(f"Failed to delete original or rename temporary file: {e2}")
-            else:
-                self.logger.error(f"Unexpected error during file replacement: {e}")
-                raise
-
-        queue_path = os.path.join(self.data_dir, 'sim_queue.csv')
-        if alphas:
-            self.logger.debug(f"Writing {len(alphas)} alphas to queue file: {queue_path}")
-            with open(queue_path, 'w', newline='') as file:
-                writer = csv.DictWriter(file, fieldnames=alphas[0].keys())
-                if file.tell() == 0:
-                    writer.writeheader()
-                writer.writerows(alphas)
-            self.logger.info(f"Successfully wrote batch of {len(alphas)} alphas to queue")
-        else:
-            self.logger.warning("No alphas were read in this batch")
-        return alphas
     def simulate_alpha(self, alpha_list):
         """
         模拟一组 alpha 表达式，通过 API 提交批量模拟请求（同步版本）。
@@ -447,11 +196,6 @@ class AlphaSimulator:
 
         # 如果请求失败（重试次数耗尽），记录错误
         self.logger.error(f"Simulation request failed after {count} attempts for alpha batch")
-        # 将整个 alpha_list 写入失败文件
-        with open(self.fail_alphas, 'a', newline='') as file:
-            writer = csv.DictWriter(file, fieldnames=alpha_list[0].keys())
-            for alpha in alpha_list:
-                writer.writerow(alpha)
         return None
     
     def generate_sim_data(self, alpha_list):
@@ -653,187 +397,14 @@ class AlphaSimulator:
                 self.session = config_manager.get_session()
             return None
 
-
-    def process_children_async(self, children):
-        """异步放入 children 处理任务"""
-        if not children:
-            self.logger.warning("Empty children list received. Skipping enqueue.")
-            return
-
-        try:
-            self.task_queue.put(children, timeout=5)
-            self.logger.info(f"Enqueued task for {len(children)} children. Queue size: {self.task_queue.qsize()}")
-        except queue.Full:
-            self.logger.error(f"Task queue is full (maxsize=100). Dropping task for {len(children)} children.")
-            temp_file = os.path.join(self.data_dir, f"dropped_children_{int(time.time())}.json")
-            with open(temp_file, 'w') as f:
-                json.dump(children, f)
-            self.logger.info(f"Saved dropped children to {temp_file}")
-
-
-    def process_children(self, children):
-        """同步处理 children，获取 alphaId 和 alpha detail，写入文件"""
-        self.logger.info(f"Processing {len(children)} children...")
-        if not children:
-            self.logger.warning("Empty children list received. Skipping processing.")
-            return
-
-        brain_api_url = "https://api.worldquantbrain.com"
-        alpha_details_list = []
-        max_retries = 3
-        retry_delay = 5
-        request_timeout = 30
-
-        for child in children:
-            self.logger.debug(f"Processing child: {child}")
-            if not isinstance(child, str):
-                self.logger.error(f"Invalid child format: {child} (Expected string)")
-                continue
-
-            for attempt in range(max_retries):
-                try:
-                    self.logger.debug(f"Fetching child simulation progress: {child} (Attempt {attempt + 1}/{max_retries})")
-                    child_progress = self.session.get(f"{brain_api_url}/simulations/{child}", timeout=request_timeout)
-                    child_progress.raise_for_status()
-                    child_data = child_progress.json()
-                    self.logger.debug(f"Child response: {child_data}")
-
-                    alpha_id = child_data.get("alpha")
-                    if not alpha_id:
-                        self.logger.warning(f"No alpha_id found for child: {child}. Response: {child_data}")
-                        break
-
-                    self.logger.debug(f"Fetching alpha detail for alpha_id: {alpha_id}")
-                    alpha_response = self.session.get(f"{brain_api_url}/alphas/{alpha_id}", timeout=request_timeout)
-                    alpha_response.raise_for_status()
-                    alpha_details = alpha_response.json()
-                    if not alpha_details:
-                        self.logger.warning(f"Empty alpha details for alpha_id: {alpha_id}")
-                        break
-                    # 转换数据格式
-                    formatted = {
-                        "id": alpha_details.get("id"),
-                        "type": alpha_details.get("type"),
-                        "author": alpha_details.get("author"),
-                        "settings": str(alpha_details.get("settings", {})),
-                        "regular": str(alpha_details.get("regular", {})),
-                        "dateCreated": alpha_details.get("dateCreated"),
-                        "dateSubmitted": alpha_details.get("dateSubmitted"),
-                        "dateModified": alpha_details.get("dateModified"),
-                        "name": alpha_details.get("name"),
-                        "favorite": alpha_details.get("favorite", False),
-                        "hidden": alpha_details.get("hidden", False),
-                        "color": alpha_details.get("color"),
-                        "category": alpha_details.get("category"),
-                        "tags": str(alpha_details.get("tags", [])),
-                        "classifications": str(alpha_details.get("classifications", [])),
-                        "grade": alpha_details.get("grade"),
-                        "stage": alpha_details.get("stage"),
-                        "status": alpha_details.get("status"),
-                        "is": str(alpha_details.get("is", {})),
-                        "os": alpha_details.get("os"),
-                        "train": alpha_details.get("train"),
-                        "test": alpha_details.get("test"),
-                        "prod": alpha_details.get("prod"),
-                        "competitions": alpha_details.get("competitions"),
-                        "themes": str(alpha_details.get("themes", [])),
-                        "pyramids": str(alpha_details.get("pyramids", [])),
-                        "team": alpha_details.get("team")
-                    }
-
-                    alpha_details_list.append(formatted)
-                    self.logger.debug(f"Successfully retrieved alpha details for alpha_id: {alpha_id}")
-                    break
-
-                except requests.exceptions.RequestException as e:
-                    self.logger.error(f"Error fetching child {child} or alpha detail (Attempt {attempt + 1}/{max_retries}): {e}")
-                    if attempt < max_retries - 1:
-                        self.logger.info(f"Retrying after {retry_delay}s...")
-                        time.sleep(retry_delay)
-                    else:
-                        self.logger.error(f"Max retries reached for child {child}. Skipping...")
-                        if "401" in str(e) or "403" in str(e):
-                            self.logger.info("Authentication error detected. Re-signing in...")
-                            if config_manager.renew_session():
-                                self.session = config_manager.get_session()
-                        break
-                except ValueError as e:
-                    self.logger.error(f"Invalid JSON response for child {child}: {e}")
-                    break
-                except Exception as e:
-                    self.logger.error(f"Unexpected error processing child {child}: {e}")
-                    break
-
-        if alpha_details_list:
-            output_file = os.path.join(self.data_dir, self.FILE_CONFIG["output_file"])
-            try:
-                with self.lock:
-                    self.logger.info(f"Writing {len(alpha_details_list)} alpha details to file: {output_file}")
-                    if not os.access(self.data_dir, os.W_OK):
-                        self.logger.error(f"No write permission for directory: {self.data_dir}")
-                        return
-                    fieldnames = alpha_details_list[0].keys()
-                    with open(output_file, 'a', newline='') as file:
-                        writer = csv.DictWriter(file, fieldnames=fieldnames)
-                        if os.stat(output_file).st_size == 0:
-                            writer.writeheader()
-                        for alpha_details in alpha_details_list:
-                            try:
-                                writer.writerow(alpha_details)
-                                self.logger.debug(f"Wrote alpha details: {alpha_details.get('id', 'unknown')}")
-                            except Exception as e:
-                                self.logger.error(f"Error writing alpha details {alpha_details.get('id', 'unknown')}: {e}")
-                    self.logger.info(f"Successfully wrote {len(alpha_details_list)} alpha details to {output_file}")
-            except PermissionError as e:
-                self.logger.error(f"Permission error writing to file {output_file}: {e}")
-            except Exception as e:
-                self.logger.error(f"Error writing to file {output_file}: {e}")
-        else:
-            self.logger.warning(f"No alpha details to write for {len(children)} children. alpha_details_list is empty.")
-
-    def worker(self):
-        """后台子线程，处理队列中的 children 列表"""
-        self.logger.info("Worker thread started. Waiting for tasks...")
-        while self.running:
-            try:
-                children = self.task_queue.get(timeout=10)
-                if children is None:
-                    self.logger.info("Shutdown signal received. Worker thread exiting.")
-                    self.task_queue.task_done()
-                    break
-
-                self.logger.info(f"Worker received a task with {len(children)} children.")
-                self.process_children(children)
-                self.logger.info("Worker finished processing current task.")
-                self.task_queue.task_done()
-
-            except queue.Empty:
-                self.logger.debug("Task queue is empty. Waiting for new tasks...")
-                continue
-            except Exception as e:
-                self.logger.error(f"Unexpected error in worker thread: {e}")
-                self.task_queue.task_done()
-                continue
-
-        self.logger.info("Worker thread stopped.")
-
-    def shutdown(self):
-        """优雅关闭子线程"""
-        self.logger.info("Shutting down the worker thread...")
-        self.task_queue.put(None)
-        if self.worker_thread.is_alive():
-            self.worker_thread.join(timeout=10)
-            if self.worker_thread.is_alive():
-                self.logger.warning("Worker thread did not terminate within 10 seconds.")
-        self.logger.info("Worker thread has been successfully shut down.")
-
     def check_simulation_status(self):
         """检查所有活跃模拟的状态"""
         current_time = time.time()
         time_diff = current_time - self.active_update_time
         if time_diff > 3600 and len(self.active_simulations) > 0:
             self.logger.warning(f"active_update_time exceeds 1 hour (diff: {time_diff:.2f} seconds). Resetting active simulations.")
-            self.session = self.sign_in(self.username, self.password)
+            if config_manager.renew_session():
+                self.session = config_manager.get_session()
             self.active_simulations.clear()
             self.logger.info("Active simulations cleared after re-signing in.")
 
@@ -852,7 +423,6 @@ class AlphaSimulator:
 
             self.logger.info(f"Simulation batch {sim_url} completed. Removing from active list.")
             self.active_simulations.remove(sim_url)
-            self.process_children_async(children)
             self.active_update_time = time.time()
 
         self.logger.info(f"Total {count} simulations still in progress for account {config_manager._config['username']}.")
@@ -866,15 +436,6 @@ class AlphaSimulator:
         with open(self.state_file, 'w') as f:
             json.dump(state, f)
         self.logger.info(f"Saved {len(self.active_simulations)} active simulations to {self.state_file}")
-
-        if self.sim_queue_ls:
-            with open(self.alpha_list_file_path, 'a', newline='') as file:
-                writer = csv.DictWriter(file, fieldnames=self.sim_queue_ls[0].keys())
-                if os.stat(self.alpha_list_file_path).st_size == 0:
-                    writer.writeheader()
-                writer.writerows(self.sim_queue_ls)
-            self.logger.info(f"Reinserted {len(self.sim_queue_ls)} alphas back to {self.alpha_list_file_path}")
-            self.sim_queue_ls = []
 
     def fetch_pending_alphas_in_batches(self, batch_size):
         """从数据库批量查询待回测alpha

@@ -3,50 +3,70 @@ import ast
 from typing import List, Dict, Optional, Tuple
 from pathlib import Path
 from copy import deepcopy
-from self_corr_calculator import sign_in, calc_self_corr, get_alpha_pnls
+from self_corr_calculator import calc_self_corr, get_alpha_pnls
 from logger import Logger
-import csv
 from datetime import datetime, timedelta
 import threading
 from signal_manager import SignalManager
 import traceback
 import os
+from config_manager import config_manager
+from dao import SimulatedAlphasDAO
+from dao import AlphaSignalDAO
 
 class AlphaFilter:
     """
     一个类，用于筛选 alpha 数据，计算相关性，并按区域保存结果。
 
-    该类从 simulated_alphas.csv 文件中读取 alpha 数据，基于 fitness 和 sharpe 筛选 alpha，
-    使用筛选后的 alpha 生成 os_alpha_ids 和 os_alpha_rets，逐一计算每个 alpha 的最大相关性
-    （移除自身后），筛选相关性低于阈值的 alpha，并按区域写入 CSV 文件。
+    该类从 simulated_alphas.csv 文件中读取 alpha 数据，基于 fitness 和 sharpe 筛选 alpha,
+    使用筛选后的 alpha 生成 os_alpha_ids 和 os_alpha_rets,逐一计算每个 alpha 的最大相关性
+    （移除自身后）,筛选相关性低于阈值的 alpha,并按区域写入 CSV 文件。
     """
-    def __init__(self, username: str, password: str, data_dir: str = "data", signal_manager=None):
+    def __init__(self, signal_manager=None):
         """
-        初始化 AlphaFilter，自动设置日期为前一天
+        初始化 AlphaFilter,自动设置日期为前一天
         
         参数:
             username (str): WorldQuant Brain API 用户名
             password (str): WorldQuant Brain API 密码
             data_dir (str): 数据目录，默认为 "data"
         """
-        self.data_dir = Path(data_dir)
-        self.date_str = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
-        self.username = username
-        self.password = password
-        self.sess = sign_in(username, password)
-        if not self.sess:
-            raise ValueError("Failed to sign in, cannot initialize AlphaFilter")
+        self.date_str = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
+
         self.os_alpha_ids: Optional[Dict[str, List]] = None
         self.os_alpha_rets: Optional[pd.DataFrame] = None
         self.logger = Logger()
         self._monitor_thread = None
         self._stop_event = threading.Event()
+
+        self.simulated_alphas_dao = SimulatedAlphasDAO()
+        self.alpha_signal_dao = AlphaSignalDAO()
+        
         # 注册信号处理
         if signal_manager:
             signal_manager.add_handler(self.handle_exit_signal)
         else:
-            self.logger.warning("未提供 SignalManager，AlphaSimulator 无法注册信号处理函数")
+            self.logger.warning("未提供 SignalManager,AlphaSimulator 无法注册信号处理函数")
+
+        # 从配置中心获取参数
+        self._load_config_from_manager()
+        
+    def _load_config_from_manager(self):
+        
+        """从配置中心加载运行时参数"""
+        config = config_manager._config  # 直接访问内部配置
+        
+        # 加载核心参数（带默认值）
+        self.username = config.get('username', '')
+        self.password = config.get('password', '')
+        # 使用配置中心的session
+        self.sess = config_manager.get_session()
+        if not self.sess:
+            raise ValueError("Failed to sign in, cannot initialize AlphaFilter")
+        
+        self.logger.info(f"Loaded config session success in AlphaFilter")
     
+
     def handle_exit_signal(self, signum, frame):
         self.logger.info(f"Received shutdown signal {signum}, saving unfinished alpha IDs...")
         self.stop_monitoring()
@@ -54,27 +74,42 @@ class AlphaFilter:
 
     def load_alpha_data(self) -> pd.DataFrame:
         """
-        从 simulated_alphas.csv 文件加载 alpha 数据。
+        从数据库中加载指定日期的 alpha 数据，使用分页查询避免一次加载过多数据。
 
         返回:
             pd.DataFrame: 包含 alpha 数据的 DataFrame。
 
         异常:
-            FileNotFoundError: 如果 CSV 文件不存在。
+            Exception: 如果数据库查询失败。
         """
-        file_path = os.path.join(self.data_dir,f"simulated_alphas.csv.{self.date_str}")
         try:
-            # 使用更灵活的CSV解析方式
-            df = pd.read_csv(file_path, quoting=csv.QUOTE_ALL, escapechar='\\', on_bad_lines='warn')
-            self.logger.info(f"Successfully loaded file: {file_path}")
+            
+            total_count = self.simulated_alphas_dao.count_by_datetime(self.date_str)
+            self.logger.info(f"Total alphas in database for date {self.date_str}: {total_count}")
+            
+            if total_count == 0:
+                self.logger.warning(f"No alphas found for date {self.date_str} in database")
+                return pd.DataFrame()
+            
+            page_size = 1000  # 每页加载1000条记录
+            all_rows = []
+            
+            for offset in range(0, total_count, page_size):
+                self.logger.debug(f"Loading alphas from database: offset={offset}, limit={page_size}")
+                chunk = self.simulated_alphas_dao.get_by_datetime_paginated(self.date_str, limit=page_size, offset=offset)
+                all_rows.extend(chunk)
+                self.logger.debug(f"Loaded {len(chunk)} alphas (total so far: {len(all_rows)})")
+            
+            df = pd.DataFrame(all_rows)
+            self.logger.info(f"Successfully loaded {len(df)} alphas from database for date {self.date_str}")
             return df
-        except FileNotFoundError:
-            self.logger.error(f"File not found: {file_path}")
+        except Exception as e:
+            self.logger.error(f"Failed to load alpha data from database: {e}")
             raise
 
     def filter_alphas(self, df: pd.DataFrame, min_fitness: float, min_sharpe: float, exclude_operators: List[str] = None) -> List[Dict]:
         """
-        筛选符合 fitness 和 sharpe 条件的 alpha，过滤掉包含指定运算符的行，构造 alpha_result，并按 sharpe 值从小到大排序。
+        筛选符合 fitness 和 sharpe 条件的 alpha,过滤掉包含指定运算符的行,构造 alpha_result,并按 sharpe 值从小到大排序。
 
         参数:
             df (pd.DataFrame): 包含 alpha 数据的 DataFrame。
@@ -83,7 +118,7 @@ class AlphaFilter:
             exclude_operators (List[str], optional): 需要过滤的运算符列表，例如 ['trade_when', 'other_operator']。
 
         返回:
-            List[Dict]: 筛选后的 alpha 元数据列表，每个字典包含 id、settings 和 sharpe，按 sharpe 排序。
+            List[Dict]: 筛选后的 alpha 元数据列表，每个字典包含 id、settings 和 sharpe,按 sharpe 排序。
         """
         # 如果 exclude_operators 为空，则初始化为空列表
         exclude_operators = exclude_operators or []
@@ -141,6 +176,7 @@ class AlphaFilter:
                     classifications_str = row['classifications']
                     try:
                         classifications = ast.literal_eval(classifications_str) if classifications_str and classifications_str != '[]' else []
+                        self.logger.debug(f"get alpha {row['id']} classifications raw data: {classifications}...")
                     except (SyntaxError, ValueError) as e:
                         self.logger.warning(f"Failed to parse alpha {row['id']} classifications: {e}, raw data: {classifications_str[:100]}...")
                         classifications = []
@@ -222,11 +258,8 @@ class AlphaFilter:
 
         # 获取所有 alpha 的盈亏数据
         try:
-            new_sess = sign_in(self.username, self.password)
-            if new_sess is None:
-                self.logger.error("Failed to re-authenticate session, continuing with existing session")
-            else:
-                self.sess = new_sess
+            if config_manager.renew_session():
+                self.sess = config_manager.get_session()
                 self.logger.info("Session re-authenticated successfully")
             _, self.os_alpha_rets = get_alpha_pnls(
                 alphas = alpha_result, sess = self.sess, username=self.username, password=self.password)
@@ -254,7 +287,8 @@ class AlphaFilter:
                     # 筛选出缺失的 alpha 元数据
                     retry_alphas = [alpha for alpha in alpha_result if alpha['id'] in alpha_ids and alpha['settings']['region'] == region]
                     if retry_alphas:
-                        self.sess = sign_in(self.username, self.password)
+                        if config_manager.renew_session():
+                            self.sess = config_manager.get_session()
                         _, retry_rets = get_alpha_pnls(retry_alphas, self.sess)
                         # 转换为日收益率
                         retry_rets = retry_rets - retry_rets.ffill().shift(1)
@@ -294,11 +328,8 @@ class AlphaFilter:
         """
         filtered_alphas = {}
         temp_alpha_ids = deepcopy(self.os_alpha_ids)
-        new_sess = sign_in(self.username, self.password)
-        if new_sess is None:
-            self.logger.error("Failed to re-authenticate session, continuing with existing session")
-        else:
-            self.sess = new_sess
+        if config_manager.renew_session():
+            self.sess = config_manager.get_session()
             self.logger.info("Session re-authenticated successfully")
 
         for region in temp_alpha_ids:
@@ -313,11 +344,8 @@ class AlphaFilter:
                 idx += 1
                 self.logger.info(f"[{region}] Processing alpha {idx}/{alpha_count}: {alpha_id}")
                 if idx % 100 == 0:
-                    new_sess = sign_in(self.username, self.password)
-                    if new_sess is None:
-                        self.logger.error("Failed to re-authenticate session, continuing with existing session")
-                    else:
-                        self.sess = new_sess
+                    if config_manager.renew_session():
+                        self.sess = config_manager.get_session()
                         self.logger.info("Session re-authenticated successfully")
 
                 if not alpha:
@@ -359,12 +387,13 @@ class AlphaFilter:
 
     def save_filtered_alphas(self, filtered_alphas: Dict[str, List[Dict]], original_df: pd.DataFrame) -> None:
         """
-        将筛选后的 alpha 按区域保存到 CSV 文件，包含 self_corr 列。
+        将筛选后的 alpha 保存到数据库的 alpha_signal_table 表，包含 self_corr 列。
 
         参数:
             filtered_alphas (Dict[str, List[Dict]]): 按区域分组的筛选后 alpha 列表。
-            original_df (pd.DataFrame): 原始 alpha 数据 DataFrame，用于保留完整信息。
+            original_df (pd.DataFrame): 原始 alpha 数据 DataFrame,用于保留完整信息。
         """
+        total_inserted = 0
         for region, alphas in filtered_alphas.items():
             if not alphas:
                 self.logger.info(f"No filtered alphas for region {region}, skipping save")
@@ -377,17 +406,24 @@ class AlphaFilter:
             # 从原始 DataFrame 中提取对应行
             region_df = original_df[original_df['id'].isin(alpha_ids)].copy()
 
-            # 添加 self_corr 列
-            region_df['self_corr'] = region_df['id'].map(self_corrs)
-            self.logger.info(f"Added self_corr column for region {region}, contains {len(region_df)} alphas")
+            # 添加 self_corr 列并重命名为 selfCorrelation
+            region_df['selfCorrelation'] = region_df['id'].map(self_corrs)
+            self.logger.info(f"Added selfCorrelation column for region {region}, contains {len(region_df)} alphas")
 
-            # 保存到 CSV 文件
-            output_path = os.path.join(self.data_dir,f"simulated_alphas_{region}.csv.{self.date_str}")
+            # 转换为字典列表，准备批量插入
+            data_list = region_df.to_dict('records')
+            self.logger.info(f"Converted {len(data_list)} records to dict format for region {region}")
+
             try:
-                region_df.to_csv(output_path, index=False)
-                self.logger.info(f"Saved filtered alphas to: {output_path} (total {len(region_df)} alphas)")
+                # 批量插入到数据库
+                inserted_count = self.alpha_signal_dao.batch_insert(data_list)
+                total_inserted += inserted_count
+                self.logger.info(f"Inserted {inserted_count} alphas for region {region} into alpha_signal_table")
             except Exception as e:
-                self.logger.error(f"Failed to save file {output_path}: {e}")
+                self.logger.error(f"Failed to insert alphas for region {region}: {e}")
+                self.logger.debug(f"Exception details: {traceback.format_exc()}")
+
+        self.logger.info(f"Total inserted {total_inserted} filtered alphas into database")
 
     def process_alphas(self, min_fitness: float = 1.0, min_sharpe: float = 1.0, corr_threshold: float = 0.5) -> None:
         """
@@ -404,18 +440,17 @@ class AlphaFilter:
         # 筛选符合 fitness 和 sharpe 条件的 alpha
         alpha_result = self.filter_alphas(df, min_fitness, min_sharpe, ['trade_when'])
 
-        # 检查所有region文件是否已存在
+        # 检查所有region是否已存在数据库中
         regions = {alpha['settings']['region'] for alpha in alpha_result}
         self.logger.info(f"Found regions in alpha_result: {regions}")
-        all_files_exist = True
+        all_region_exist = True
         for region in regions:
-            file_path = os.path.join(self.data_dir, f"simulated_alphas_{region}.csv.{self.date_str}")
-            if not os.path.exists(file_path):
-                all_files_exist = False
+            if not self.alpha_signal_dao.region_and_datetime_exists(region, datetime):
+                all_region_exist = False
                 break
 
-        if all_files_exist:
-            self.logger.info(f"All region files already exist for date {self.date_str}, skipping processing")
+        if all_region_exist:
+            self.logger.info(f"All region already exist for date {self.date_str}, skipping processing")
             return
 
         # 使用筛选后的 alpha 生成比较数据
@@ -449,18 +484,22 @@ class AlphaFilter:
         def monitor_loop():
             while not self._stop_event.is_set():
                 try:
-                    file_path = os.path.join(self.data_dir, f"simulated_alphas.csv.{self.date_str}")
-                    if os.path.exists(file_path):
-                        self.logger.info(f"Found data file for {self.date_str}, starting processing...")
+                    # Get max datetime from database
+                    max_datetime = self.simulated_alphas_dao.get_max_datetime()
+                    
+                    if max_datetime and max_datetime > self.date_str:
+                        self.logger.info(f"New data available (max datetime: {max_datetime}), current date: {self.date_str}")
+                        self.logger.info(f"Starting processing for date {self.date_str}...")
                         self.process_alphas(min_fitness, min_sharpe, corr_threshold)
                         self._advance_date()
                     else:
-                        self.logger.debug(f"Data file not found for {self.date_str}, waiting...")
+                        self.logger.debug(f"No new data found for date {self.date_str}, max datetime: {max_datetime}")
                 except Exception as e:
                     self.logger.error(f"Error during monitoring: {e}")
+                    self.logger.debug(f"Exception details: {traceback.format_exc()}")
                 
                 # Wait for interval or until stopped
-                self.logger.info("No new alpha to filter. Sleeping for 1.5 hour.")
+                self.logger.info(f"No new alpha to filter. Sleeping for {interval_minutes / 60} hour.")
                 self._stop_event.wait(timeout=interval_minutes * 60)
 
         self._monitor_thread = threading.Thread(
@@ -482,9 +521,9 @@ class AlphaFilter:
 
     def _advance_date(self):
         """将日期前进一天"""
-        current_date = datetime.strptime(self.date_str, "%Y-%m-%d")
+        current_date = datetime.strptime(self.date_str, "%Y%m%d")
         new_date = current_date + timedelta(days=1)
-        self.date_str = new_date.strftime("%Y-%m-%d")
+        self.date_str = new_date.strftime("%Y%m%d")
         self.logger.info(f"Advanced processing date to {self.date_str}")
 
 """

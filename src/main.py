@@ -38,15 +38,6 @@ def main():
     if config is None:
         logger.error("Failed to load configuration. Exiting...")
         return
-    username = config['username']
-    password = config['password']
-    max_concurrent = config['max_concurrent']
-    batch_number_for_every_queue = config['batch_number_for_every_queue']
-    batch_size = config['batch_size']
-    init_date = config['init_date_str']
-    if not all([username, password, max_concurrent, batch_number_for_every_queue, batch_size, init_date]):
-        logger.error("One or more config parameters are missing or invalid. Exiting...")
-        return
     
     # 创建 SignalManager
     signal_manager = SignalManager()
@@ -66,41 +57,31 @@ def main():
     except Exception as e:
         logger.error(f"Unexpected error during initialization: {e}")
         return
-    # 检查输入文件是否存在
-    input_file_path = simulator.alpha_list_file_path
-    if not os.path.exists(input_file_path):
-        logger.error(f"{input_file_path} does not exist. Exiting...")
-        return
     
     # 构建基础路径
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
-    data_dir = os.path.join(project_root, 'data')
     output_dir = os.path.join(project_root, 'output')
     
-    
+    """
     # 实例化 ProcessSimulatedAlphas 并启动调度
     processor = ProcessSimulatedAlphas(
-        data_dir, 
         output_dir, 
         1.58, 1.0, 
-        username, 
-        password, 
-        init_date, 
         signal_manager)          
     processor.manage_process()
     
     
     # 初始化 AlphaFilter
-    alpha_filter = AlphaFilter(username, password, data_dir=data_dir, signal_manager=signal_manager)
+    alpha_filter = AlphaFilter(signal_manager=signal_manager)
     # 启动监控线程
     alpha_filter.start_monitoring(
-        interval_minutes=90,
+        interval_minutes=180,
         min_fitness=0.7,
         min_sharpe=1.2,
         corr_threshold=0.75
     )
-    
+    """
     
     # 使用ConfigManager中的配置启动Poller（无需传参）
     poller = AlphaPoller()

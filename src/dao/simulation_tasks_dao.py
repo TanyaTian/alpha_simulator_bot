@@ -14,7 +14,7 @@ class SimulationTasksDAO:
     def insert(self, data):
         """
         插入一条 simulation task
-        :param data: dict，包含 child_id, submit_time, status, query_attempts, last_query_time
+        :param data: dict,包含 child_id, submit_time, status, query_attempts, last_query_time
         :return: None
         """
         self.logger.debug(f"Inserting simulation task: {data}")

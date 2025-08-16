@@ -47,7 +47,7 @@ class ConfigManager:
         s = requests.Session()
         s.auth = (username, password)
         count = 0
-        count_limit = 3
+        count_limit = 30
         
         while True:
             try:
@@ -179,4 +179,5 @@ if __name__ == '__main__':
 #    curl -X GET http://localhost:5001/config
 #
 # 2. Update config (example updating 'timeout' value):
-#    curl -X POST http://localhost:5001/config/update -H "Content-Type: application/json" -d '{"max_concurrent": 2}'
+#    curl -X POST http://localhost:5001/config/update -H "Content-Type: application/json" -d '{"max_concurrent": 8}'
+# curl -X POST http://localhost:5001/config/update -H "Content-Type: application/json" -d '{"region_set": ["USA", "USA", "GLB"]}'

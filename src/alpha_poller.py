@@ -137,8 +137,13 @@ class AlphaPoller:
                 self._update_task_status(child, 'failed')
         if alpha_details_list:
             try:
-                records_inserted = self.simulated_alphas_dao.batch_insert(alpha_details_list)
-                self.logger.info(f"Successfully inserted {records_inserted} records into simulated_alphas_table")
+                # Enable on_duplicate_update to update all columns except primary key 'id'
+                self.logger.debug("Performing batch insert with on_duplicate_update=True")
+                records_inserted = self.simulated_alphas_dao.batch_insert(
+                    alpha_details_list,
+                    on_duplicate_update=True
+                )
+                self.logger.info(f"Successfully inserted/updated {records_inserted} records into simulated_alphas_table")
             except Exception as e:
                 self.logger.error(f"Database batch insert failed: {e}")
         else:
@@ -179,7 +184,7 @@ class AlphaPoller:
             while True:
                 try:
                     # 获取100个pending状态的任务
-                    pending_tasks = self.simulation_tasks_dao.list_pending_tasks_lite(limit=1)
+                    pending_tasks = self.simulation_tasks_dao.list_pending_tasks_lite(limit=10)
                     
                     if pending_tasks:
                         self.logger.info(f"Found {len(pending_tasks)} pending tasks")

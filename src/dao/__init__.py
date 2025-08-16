@@ -2,3 +2,5 @@
 from .simulated_alphas_dao import SimulatedAlphasDAO
 from .alpha_list_pending_simulated_dao import AlphaListPendingSimulatedDAO
 from .simulation_tasks_dao import SimulationTasksDAO
+from .alpha_signal_dao import AlphaSignalDAO
+from .stone_gold_bag_dao import StoneGoldBagDAO
