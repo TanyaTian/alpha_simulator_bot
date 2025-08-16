@@ -63,7 +63,6 @@ def main():
     project_root = os.path.dirname(script_dir)
     output_dir = os.path.join(project_root, 'output')
     
-    """
     # 实例化 ProcessSimulatedAlphas 并启动调度
     processor = ProcessSimulatedAlphas(
         output_dir, 
@@ -81,7 +80,7 @@ def main():
         min_sharpe=1.2,
         corr_threshold=0.75
     )
-    """
+    
     
     # 使用ConfigManager中的配置启动Poller（无需传参）
     poller = AlphaPoller()
