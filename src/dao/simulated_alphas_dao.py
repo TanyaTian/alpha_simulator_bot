@@ -18,24 +18,37 @@ class SimulatedAlphasDAO:
         return result
     
     def batch_insert(self, data_list, on_duplicate_update=False, chunk_size=1000):
-        self.logger.debug(f"Starting batch insert of {len(data_list)} items")
+        """
+        批量插入数据，支持分块和重复键处理
+        """
+        if not data_list:
+            self.logger.debug("batch_insert: data_list is empty, skipped.")
+            return 0
+
+        self.logger.debug(f"Starting batch insert of {len(data_list)} items, chunk_size={chunk_size}")
         total = 0
-        try:
-            for i in range(0, len(data_list), chunk_size):
-                chunk = data_list[i:i + chunk_size]
-                affected = self.db.batch_insert(
-                    self.TABLE_NAME, 
-                    chunk, 
-                    on_duplicate_update=on_duplicate_update
-                )
+        success = True
+
+        for i in range(0, len(data_list), chunk_size):
+            chunk = data_list[i:i + chunk_size]
+            affected = self.db.batch_insert(
+                self.TABLE_NAME,
+                chunk,
+                on_duplicate_update=on_duplicate_update
+            )
+            if affected > 0:
                 total += affected
-                self.logger.debug(f"Inserted chunk {i}-{i+chunk_size}, affected: {affected}")
-            self.logger.debug(f"Total batch insert affected: {total}")
-            return total
-        except Exception as e:
-            self.db.connection.rollback()
-            self.logger.error(f"Batch insert failed: {e}")
-            raise e
+                self.logger.debug(f"Chunk {i}-{i+len(chunk)-1} inserted, affected: {affected}")
+            else:
+                self.logger.error(f"Failed to insert chunk {i}-{i+len(chunk)-1}")
+                success = False
+
+        self.logger.info(f"Batch insert completed. Total affected: {total}")
+        
+        if not success:
+            raise RuntimeError("One or more chunks failed during batch insert")
+            
+        return total
 
     def get_by_id(self, alpha_id):
         self.logger.debug(f"Querying alpha with ID: {alpha_id}")
@@ -119,4 +132,5 @@ class SimulatedAlphasDAO:
             raise e
 
     def close(self):
-        self.db.connection.close()
+        """关闭整个数据库连接池（通常在程序退出时调用）"""
+        self.db.close()  # ✅ 正确：调用 Database 的 close() 方法

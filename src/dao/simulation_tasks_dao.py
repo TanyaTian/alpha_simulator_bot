@@ -64,17 +64,16 @@ class SimulationTasksDAO:
         :return: 受影响行数
         """
         self.logger.debug(f"Incrementing query attempts for {child_id}")
-        sql = f"""
-            UPDATE {self.TABLE_NAME}
-            SET query_attempts = query_attempts + 1
-            WHERE child_id = %s
-        """
-        with self.db.connection.cursor() as cursor:
-            cursor.execute(sql, (child_id,))
-            self.db.connection.commit()
-            result = cursor.rowcount
-            self.logger.debug(f"Query attempts incremented, affected rows: {result}")
-            return result
+        
+        update_data = {
+            'query_attempts': 'query_attempts + 1'  # 表达式更新
+        }
+        where_clause = "child_id = %s"
+        
+        result = self.db.update(self.TABLE_NAME, update_data, where_clause, (child_id,))
+        
+        self.logger.debug(f"Query attempts incremented, affected rows: {result}")
+        return result
 
     def update_status_and_last_query(self, child_id, new_status, query_time):
         """

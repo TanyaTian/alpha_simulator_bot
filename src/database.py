@@ -4,6 +4,7 @@ import os
 import pymysql
 from configparser import ConfigParser
 from pymysql.cursors import DictCursor
+from dbutils.pooled_db import PooledDB  # 🔁 引入连接池
 
 # ✅ 导入日志模块
 from logger import Logger
@@ -12,16 +13,28 @@ db_logger = Logger().logger  # 使用项目统一日志
 
 
 class Database:
+    _instance = None
+    _pool = None
+
+    def __new__(cls, config_file='db_config.ini'):
+        """单例模式：确保全局只有一个 Database 实例和连接池"""
+        if cls._instance is None:
+            cls._instance = super(Database, cls).__new__(cls)
+        return cls._instance
+
     def __init__(self, config_file='db_config.ini'):
+        # 避免重复初始化
+        if hasattr(self, 'initialized') and self.initialized:
+            return
+
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        config_path = os.path.join(project_root, 'config', 'db_config.ini')
+        config_path = os.path.join(project_root, 'config', config_file)
         config = ConfigParser()
 
-        # 🔴 初始化阶段：配置文件错误、连接失败 → 抛出异常，终止程序
         try:
             if not os.path.exists(config_path):
                 error_msg = f"Database config file not found: {config_path}"
-                db_logger.critical(error_msg)  # critical 表示严重错误，应终止
+                db_logger.critical(error_msg)
                 raise FileNotFoundError(error_msg)
 
             config.read(config_path)
@@ -33,43 +46,68 @@ class Database:
 
             db_config = config['database']
 
-            self.connection = pymysql.connect(
-                host=db_config.get('host'),
-                port=db_config.getint('port', 3306),
-                user=db_config.get('user'),
-                password=db_config.get('password'),
-                database=db_config.get('database'),
-                charset=db_config.get('charset', 'utf8mb4'),
+            # 🔧 提取配置
+            host = db_config.get('host')
+            port = db_config.getint('port', 3306)
+            user = db_config.get('user')
+            password = db_config.get('password')
+            database = db_config.get('database')
+            charset = db_config.get('charset', 'utf8mb4')
+            max_connections = db_config.getint('max_connections', 20)
+            min_cached = db_config.getint('min_cached', 5)
+            max_cached = db_config.getint('max_cached', 10)
+
+            # 🏊 创建连接池
+            self._pool = PooledDB(
+                creator=pymysql,
+                host=host,
+                port=port,
+                user=user,
+                password=password,
+                database=database,
+                charset=charset,
                 cursorclass=DictCursor,
                 autocommit=True,
-                connect_timeout=10,
+                # --- 连接池配置 ---
+                maxconnections=max_connections,    # 最大连接数
+                mincached=min_cached,              # 初始化时创建的空闲连接数
+                maxcached=max_cached,              # 最大空闲连接数
+                maxshared=5,                       # 最大共享连接数（适用于支持共享的数据库）
+                blocking=True,                     # 连接数达到上限时，请求是否等待
+                maxusage=1000,                     # 每个连接最多被使用次数（避免长期使用）
+                setsession=[],                     # 每次获取连接时执行的命令（如 SET NAMES）
+                ping=1,                            # 每次获取连接时 ping 一次，确保连接有效
             )
-            db_logger.info("✅ Database connection established.")
+
+            db_logger.info(f"✅ Database connection pool created. "
+                          f"max={max_connections}, min_cached={min_cached}, max_cached={max_cached}")
+
+            self.initialized = True  # 标记已初始化
 
         except Exception as e:
-            db_logger.critical(f"❌ FATAL: Failed to initialize database: {e}")
-            # 🔥 重新抛出异常，让程序终止
-            raise  # 让上层（如 main.py）决定是否退出
+            db_logger.critical(f"❌ FATAL: Failed to initialize database pool: {e}")
+            raise
 
-    def _ensure_connection(self):
-        """检查连接是否有效，自动重连"""
-        if not self.connection:
-            db_logger.error("Database connection is None.")
-            return False
+    def _get_connection(self):
+        """从连接池获取一个连接，并确保其有效"""
         try:
-            self.connection.ping(reconnect=True)
-            return True
+            conn = self._pool.connection()
+            # 由于 ping=1 已设置，这里通常不需要再 ping
+            # 但为了保险，可以再检查一次
+            conn.ping(reconnect=True)
+            return conn
         except Exception as e:
-            db_logger.error(f"Database connection lost: {e}")
-            return False
+            db_logger.error(f"❌ Failed to get connection from pool: {e}")
+            return None
 
     def query(self, sql, params=None):
-        if not self._ensure_connection():
-            db_logger.error(f"Query skipped: no database connection. SQL: {sql}")
+        conn = self._get_connection()
+        if not conn:
+            db_logger.error(f"Query skipped: no connection from pool. SQL: {sql}")
             return None
 
         try:
-            with self.connection.cursor() as cursor:
+            with conn.cursor() as cursor:
                 cursor.execute(sql, params or ())
                 result = cursor.fetchall()
                 db_logger.debug(f"Query OK: {sql}, rows: {len(result)}")
@@ -77,29 +115,34 @@ class Database:
         except Exception as e:
             db_logger.error(f"❌ Query failed: {sql}, params: {params}, error: {e}")
             return None
+        finally:
+            conn.close()  # 🔐 归还连接到池中（不是真正关闭）
 
     def execute(self, sql, params=None):
-        if not self._ensure_connection():
+        conn = self._get_connection()
+        if not conn:
             db_logger.error(f"Execute skipped: no connection. SQL: {sql}")
             return 0
 
         try:
-            with self.connection.cursor() as cursor:
+            with conn.cursor() as cursor:
                 cursor.execute(sql, params or ())
-                self.connection.commit()
                 rowcount = cursor.rowcount
                 db_logger.debug(f"Execute OK: {sql}, rows affected: {rowcount}")
                 return rowcount
         except Exception as e:
             db_logger.error(f"❌ Execute failed: {sql}, params: {params}, error: {e}")
             return 0
+        finally:
+            conn.close()
 
     def insert(self, table, data):
         if not data:
             db_logger.warning("Insert skipped: empty data.")
             return 0
 
-        if not self._ensure_connection():
+        conn = self._get_connection()
+        if not conn:
             db_logger.error(f"Insert skipped: no connection. Table: {table}")
             return 0
 
@@ -108,32 +151,24 @@ class Database:
             values = ', '.join(['%s'] * len(data))
             sql = f"INSERT INTO `{table}` ({keys}) VALUES ({values})"
 
-            with self.connection.cursor() as cursor:
+            with conn.cursor() as cursor:
                 cursor.execute(sql, tuple(data.values()))
-                self.connection.commit()
                 lastrowid = cursor.lastrowid
                 db_logger.debug(f"Insert OK: table={table}, id={lastrowid}")
                 return lastrowid
         except Exception as e:
             db_logger.error(f"❌ Insert failed: table={table}, data={data}, error: {e}")
             return 0
+        finally:
+            conn.close()
 
     def batch_insert(self, table, data_list, on_duplicate_update=False):
-        """执行批量插入操作，可选择在发生主键冲突时更新记录
-        
-        参数:
-            table (str): 表名
-            data_list (list): 包含字典的列表，每个字典代表一行数据
-            on_duplicate_update (bool): 是否在冲突时更新记录
-            
-        返回:
-            int: 受影响的行数
-        """
         if not data_list:
             db_logger.warning("Batch insert skipped: empty list.")
             return 0
 
-        if not self._ensure_connection():
+        conn = self._get_connection()
+        if not conn:
             db_logger.error(f"Batch insert skipped: no connection. Table: {table}")
             return 0
 
@@ -141,28 +176,29 @@ class Database:
             keys = ', '.join(f"`{k}`" for k in data_list[0].keys())
             values = ', '.join(['%s'] * len(data_list[0]))
             sql = f"INSERT INTO `{table}` ({keys}) VALUES ({values})"
-            
-            # 添加ON DUPLICATE KEY UPDATE子句
+
             if on_duplicate_update:
                 update_clause = ', '.join([f"`{k}`=VALUES(`{k}`)" for k in data_list[0].keys() if k != 'id'])
                 sql += f" ON DUPLICATE KEY UPDATE {update_clause}"
                 db_logger.debug(f"Using ON DUPLICATE KEY UPDATE for batch insert")
 
-            with self.connection.cursor() as cursor:
+            with conn.cursor() as cursor:
                 affected_rows = cursor.executemany(sql, [tuple(d.values()) for d in data_list])
-                self.connection.commit()
                 db_logger.info(f"Batch insert OK: table={table}, rows={affected_rows}, on_duplicate={on_duplicate_update}")
                 return affected_rows
         except Exception as e:
             db_logger.error(f"❌ Batch insert failed: table={table}, error: {e}")
             return 0
+        finally:
+            conn.close()
 
     def update(self, table, data, where_clause, params=None):
         if not data:
             db_logger.warning("Update skipped: empty data.")
             return 0
 
-        if not self._ensure_connection():
+        conn = self._get_connection()
+        if not conn:
             db_logger.error(f"Update skipped: no connection. Table: {table}")
             return 0
 
@@ -171,41 +207,45 @@ class Database:
             sql = f"UPDATE `{table}` SET {set_clause} WHERE {where_clause}"
             sql_params = tuple(data.values()) + (params if isinstance(params, tuple) else (params,))
 
-            with self.connection.cursor() as cursor:
+            with conn.cursor() as cursor:
                 cursor.execute(sql, sql_params)
-                self.connection.commit()
                 rowcount = cursor.rowcount
                 db_logger.debug(f"Update OK: table={table}, rows={rowcount}")
                 return rowcount
         except Exception as e:
             db_logger.error(f"❌ Update failed: table={table}, where={where_clause}, error: {e}")
             return 0
+        finally:
+            conn.close()
 
     def delete(self, table, where_clause, params=None):
         if not where_clause:
             db_logger.error("Delete skipped: missing where_clause (prevent full table delete)")
             return 0
 
-        if not self._ensure_connection():
+        conn = self._get_connection()
+        if not conn:
             db_logger.error(f"Delete skipped: no connection. Table: {table}")
             return 0
 
         try:
             sql = f"DELETE FROM `{table}` WHERE {where_clause}"
-            with self.connection.cursor() as cursor:
+            with conn.cursor() as cursor:
                 cursor.execute(sql, params)
-                self.connection.commit()
                 rowcount = cursor.rowcount
                 db_logger.info(f"Delete OK: table={table}, rows={rowcount}")
                 return rowcount
         except Exception as e:
             db_logger.error(f"❌ Delete failed: table={table}, where={where_clause}, error: {e}")
             return 0
+        finally:
+            conn.close()
 
     def close(self):
-        if self.connection:
+        """关闭整个连接池（通常在程序退出时调用）"""
+        if self._pool:
             try:
-                self.connection.close()
-                db_logger.info("Database connection closed.")
+                self._pool.close()
+                db_logger.info("Database connection pool closed.")
             except Exception as e:
-                db_logger.error(f"Error during close: {e}")
+                db_logger.error(f"Error during pool close: {e}")

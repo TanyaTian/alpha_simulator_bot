@@ -95,7 +95,7 @@ class AlphaListPendingSimulatedDAO:
         使用 FOR UPDATE SKIP LOCKED（MySQL 8.0+）
         :param region: str
         :param limit: int
-        :return: List[dict]
+        :return: List[dict] or None（失败时）
         """
         sql = """
         SELECT 
@@ -113,15 +113,12 @@ class AlphaListPendingSimulatedDAO:
         """
         params = (region, limit)
 
-        try:
-            with self.db.connection.cursor() as cursor:
-                cursor.execute(sql, params)
-                result = cursor.fetchall()
-                alpha_logger.debug(f"Locked pending alphas - Region: {region}, Locked: {len(result)}, Limit: {limit}")
-                return result
-        except Exception as e:
-            alpha_logger.error(f"❌ Lock query failed: region={region}, error: {e}")
-            return None
+        result = self.db.query(sql, params)
+        if result is not None:
+            alpha_logger.debug(f"Locked pending alphas - Region: {region}, Locked: {len(result)}, Limit: {limit}")
+        else:
+            alpha_logger.error(f"❌ Lock query failed: region={region}, limit={limit}")
+        return result
 
     def update_status_by_id(self, id, new_status: str):
         """

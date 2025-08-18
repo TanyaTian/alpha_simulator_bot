@@ -20,19 +20,24 @@ class AlphaSignalDAO:
     def batch_insert(self, data_list, chunk_size=1000):
         self.logger.debug(f"Starting batch insert of {len(data_list)} items")
         total = 0
-        try:
-            for i in range(0, len(data_list), chunk_size):
-                chunk = data_list[i:i + chunk_size]
-                # 使用ON DUPLICATE KEY UPDATE功能处理主键冲突
-                affected = self.db.batch_insert(self.TABLE_NAME, chunk, on_duplicate_update=True)
+        success = True
+
+        for i in range(0, len(data_list), chunk_size):
+            chunk = data_list[i:i + chunk_size]
+            affected = self.db.batch_insert(self.TABLE_NAME, chunk, on_duplicate_update=True)
+            if affected > 0:
                 total += affected
                 self.logger.debug(f"Inserted chunk {i}-{i+chunk_size}, affected: {affected}")
-            self.logger.debug(f"Total batch insert affected: {total}")
-            return total
-        except Exception as e:
-            self.db.connection.rollback()
-            self.logger.error(f"Batch insert failed: {e}")
-            raise e
+            else:
+                self.logger.error(f"Failed to insert chunk {i}-{i+chunk_size}")
+                success = False
+
+        self.logger.debug(f"Total batch insert affected: {total}")
+        
+        if not success:
+            raise RuntimeError("One or more chunks failed to insert")
+            
+        return total
 
     def get_by_id(self, alpha_id):
         self.logger.debug(f"Querying alpha with ID: {alpha_id}")
@@ -151,4 +156,5 @@ class AlphaSignalDAO:
             return False
             
     def close(self):
-        self.db.connection.close()
+        # 如果 Database 提供了 close() 方法（它确实提供了！）
+        self.db.close()  # ✅ 正确：关闭整个连接池
