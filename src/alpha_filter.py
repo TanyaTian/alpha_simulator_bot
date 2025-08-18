@@ -258,9 +258,8 @@ class AlphaFilter:
 
         # 获取所有 alpha 的盈亏数据
         try:
-            if config_manager.renew_session():
-                self.sess = config_manager.get_session()
-                self.logger.info("Session re-authenticated successfully")
+            self.sess = config_manager.get_session()
+            self.logger.info("Session re-authenticated successfully")
             _, self.os_alpha_rets = get_alpha_pnls(
                 alphas = alpha_result, sess = self.sess, username=self.username, password=self.password)
             # 转换为日收益率
@@ -287,8 +286,7 @@ class AlphaFilter:
                     # 筛选出缺失的 alpha 元数据
                     retry_alphas = [alpha for alpha in alpha_result if alpha['id'] in alpha_ids and alpha['settings']['region'] == region]
                     if retry_alphas:
-                        if config_manager.renew_session():
-                            self.sess = config_manager.get_session()
+                        self.sess = config_manager.get_session()
                         _, retry_rets = get_alpha_pnls(retry_alphas, self.sess)
                         # 转换为日收益率
                         retry_rets = retry_rets - retry_rets.ffill().shift(1)
@@ -328,9 +326,9 @@ class AlphaFilter:
         """
         filtered_alphas = {}
         temp_alpha_ids = deepcopy(self.os_alpha_ids)
-        if config_manager.renew_session():
-            self.sess = config_manager.get_session()
-            self.logger.info("Session re-authenticated successfully")
+        
+        self.sess = config_manager.get_session()
+        self.logger.info("Session re-authenticated successfully")
 
         for region in temp_alpha_ids:
             alpha_count = len(temp_alpha_ids[region])
@@ -344,9 +342,9 @@ class AlphaFilter:
                 idx += 1
                 self.logger.info(f"[{region}] Processing alpha {idx}/{alpha_count}: {alpha_id}")
                 if idx % 100 == 0:
-                    if config_manager.renew_session():
-                        self.sess = config_manager.get_session()
-                        self.logger.info("Session re-authenticated successfully")
+                    
+                    self.sess = config_manager.get_session()
+                    self.logger.info("Session re-authenticated successfully")
 
                 if not alpha:
                     self.logger.warning(f"Alpha {alpha_id} metadata not found, skipping")

@@ -126,8 +126,7 @@ class AlphaPoller:
 
             except requests.exceptions.RequestException as e:
                 self.logger.error(f"Error fetching child {child} or alpha detail: {e}")
-                if config_manager.renew_session():
-                    self.session = config_manager.get_session()
+                self.session = config_manager.get_session()
                 self._increment_query_attempts(child)
             except ValueError as e:
                 self.logger.error(f"Invalid JSON response for child {child}: {e}")

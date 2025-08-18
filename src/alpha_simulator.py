@@ -184,8 +184,8 @@ class AlphaSimulator:
                 # 如果重试次数超过 35 次，重新登录并跳出循环
                 if count > 35:
                     # 调用 sign_in 方法重新登录
-                    if config_manager.renew_session():
-                        self.session = config_manager.get_session()
+                    
+                    self.session = config_manager.get_session()
                     self.logger.error("Error occurred too many times, skipping this alpha batch and re-logging in.")
                     break
 
@@ -388,13 +388,13 @@ class AlphaSimulator:
                 return None
             else:
                 self.logger.error(f"Failed to fetch simulation progress: {e}")
-                if config_manager.renew_session():
-                    self.session = config_manager.get_session()
+                
+                self.session = config_manager.get_session()
                 return None
         except requests.exceptions.RequestException as e:
             self.logger.error(f"Failed to fetch simulation progress: {e}")
-            if config_manager.renew_session():
-                self.session = config_manager.get_session()
+            
+            self.session = config_manager.get_session()
             return None
 
     def check_simulation_status(self):
@@ -403,8 +403,8 @@ class AlphaSimulator:
         time_diff = current_time - self.active_update_time
         if time_diff > 3600 and len(self.active_simulations) > 0:
             self.logger.warning(f"active_update_time exceeds 1 hour (diff: {time_diff:.2f} seconds). Resetting active simulations.")
-            if config_manager.renew_session():
-                self.session = config_manager.get_session()
+            
+            self.session = config_manager.get_session()
             self.active_simulations.clear()
             self.logger.info("Active simulations cleared after re-signing in.")
 

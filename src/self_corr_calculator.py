@@ -16,7 +16,7 @@ logger = Logger()
 # 定义配置类
 @dataclass
 class Config:
-    data_path: Path = Path("data")
+    data_path: Path = Path("data/submit_alphas")
 
 cfg = Config()
 

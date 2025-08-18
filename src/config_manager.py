@@ -4,6 +4,7 @@ import os
 from utils import load_config  # 导入配置加载工具
 from logger import Logger 
 import requests
+import time
 
 class ConfigManager:
     _instance_lock = threading.Lock()
@@ -61,6 +62,9 @@ class ConfigManager:
                 if count >= count_limit:
                     self.logger.error("Max login attempts reached")
                     return None
+                else :
+                    self.logger.info("No alpha IDs to process. Sleeping for 1 min.")
+                    time.sleep(60)
     
     def _test_session(self):
         """测试session是否有效"""

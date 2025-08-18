@@ -246,8 +246,8 @@ class ProcessSimulatedAlphas:
 
             if self.idx % 200 == 0:
                 # 调用 sign_in 方法重新登录
-                if config_manager.renew_session():
-                    self.session = config_manager.get_session()
+                
+                self.session = config_manager.get_session()
                 self.logger.info(f"Progress: {self.total - len(self.alpha_ids)}/{self.total} processed.")
                 if not self.session:
                     continue
@@ -279,8 +279,8 @@ class ProcessSimulatedAlphas:
                 self.logger.info(f"Sleeping for {wait_time} seconds before retrying.")
                 time.sleep(wait_time)
                 # 调用 sign_in 方法重新登录
-                if config_manager.renew_session():
-                    self.session = config_manager.get_session()
+                
+                self.session = config_manager.get_session()
             elif isinstance(result, tuple):
                 # 成功获取三个值的情况
                 pc, sharpe, fitness = result
