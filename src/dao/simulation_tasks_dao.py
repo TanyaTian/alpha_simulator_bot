@@ -65,14 +65,24 @@ class SimulationTasksDAO:
         """
         self.logger.debug(f"Incrementing query attempts for {child_id}")
         
+        # First get the current task
+        task = self.get_by_child_id(child_id)
+        if task is None:
+            self.logger.error(f"Task with child_id {child_id} not found")
+            return 0
+            
+        # Get current attempts and increment
+        current_attempts = task.get('query_attempts', 0)
+        new_attempts = current_attempts + 1
+        
         update_data = {
-            'query_attempts': 'query_attempts + 1'  # 表达式更新
+            'query_attempts': new_attempts
         }
         where_clause = "child_id = %s"
         
         result = self.db.update(self.TABLE_NAME, update_data, where_clause, (child_id,))
         
-        self.logger.debug(f"Query attempts incremented, affected rows: {result}")
+        self.logger.debug(f"Query attempts incremented from {current_attempts} to {new_attempts}, affected rows: {result}")
         return result
 
     def update_status_and_last_query(self, child_id, new_status, query_time):

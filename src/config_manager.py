@@ -63,7 +63,7 @@ class ConfigManager:
                     self.logger.error("Max login attempts reached")
                     return None
                 else :
-                    self.logger.info("No alpha IDs to process. Sleeping for 1 min.")
+                    self.logger.info("Login failed. Retry after 1 minute.")
                     time.sleep(60)
     
     def _test_session(self):
