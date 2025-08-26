@@ -76,8 +76,9 @@ class AlphaSimulator:
         self.alpha_list_pending_simulated_dao = AlphaListPendingSimulatedDAO()
         self.simulation_task_dao = SimulationTasksDAO()
         
-        # 初始化任务队列
+        # 初始化任务队列和映射字典
         self.active_simulations = []
+        self.active_simulations_dict = {}  # 存储location_url到record_ids的映射
         self.active_update_time = time.time()
         self.lock = threading.Lock()  # 🔒 文件写入锁
 
@@ -312,6 +313,8 @@ class AlphaSimulator:
             # 如果模拟成功（返回 location_url），将 URL 添加到 active_simulations
             if location_url:
                 self.active_simulations.append(location_url)
+                # 存储location_url到record_ids的映射
+                self.active_simulations_dict[location_url] = record_ids
                 self.active_update_time = time.time()
                 self.logger.info(f"Simulation started, location_url: {location_url}")
                 # 更新数据库状态为成功
@@ -375,16 +378,25 @@ class AlphaSimulator:
                     for child in children
                 ]
                 self.simulation_task_dao.batch_insert(data_list)  # 批量插入
+                
+                # 打印children和record_ids的关联日志
+                record_ids = self.active_simulations_dict.get(simulation_progress_url)
+                if record_ids:
+                    self.logger.info(f"Associated children IDs: {children} with record IDs: {record_ids} for location: {simulation_progress_url}")
+                else:
+                    self.logger.warning(f"No record_ids found for location: {simulation_progress_url}")
             return children
 
         except requests.exceptions.HTTPError as e:
             remove_status_codes = {400, 403, 404, 410}
             if e.response.status_code in remove_status_codes:
                 self.logger.error(f"Simulation request failed with status {e.response.status_code}: {e}")
-                # Remove the simulation_progress_url from active_simulations
+                # Remove the simulation_progress_url from active_simulations and dictionary
                 if hasattr(self, 'active_simulations') and simulation_progress_url in self.active_simulations:
                     self.active_simulations.remove(simulation_progress_url)
-                    self.logger.info(f"Removed {simulation_progress_url} from active_simulations due to status code {e.response.status_code}")
+                    if simulation_progress_url in self.active_simulations_dict:
+                        del self.active_simulations_dict[simulation_progress_url]
+                    self.logger.info(f"Removed {simulation_progress_url} from active_simulations and dictionary due to status code {e.response.status_code}")
                 return None
             else:
                 self.logger.error(f"Failed to fetch simulation progress: {e}")
@@ -421,8 +433,11 @@ class AlphaSimulator:
                 self.logger.debug(f"Simulation {sim_url} still in progress or failed.")
                 continue
 
-            self.logger.info(f"Simulation batch {sim_url} completed. Removing from active list.")
+            self.logger.info(f"Simulation batch {sim_url} completed. Removing from active list and dictionary.")
             self.active_simulations.remove(sim_url)
+            # 同时删除字典中的对应条目
+            if sim_url in self.active_simulations_dict:
+                del self.active_simulations_dict[sim_url]
             self.active_update_time = time.time()
 
         self.logger.info(f"Total {count} simulations still in progress for account {config_manager._config['username']}.")

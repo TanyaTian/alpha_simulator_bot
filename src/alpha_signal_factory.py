@@ -148,11 +148,12 @@ class AlphaSignalFactory:
         all_records = []
         for region, region_records in simulation_records_by_region.items():
             self.logger.info(f"Region {region}: Prepared {len(region_records)} simulation records")
+            random.shuffle(region_records)
+            self.logger.info(f"{region} records after shuffling: {len(region_records)}")
             all_records.extend(region_records)
         
         # 随机打乱记录以增加挖掘随机性
-        random.shuffle(all_records)
-        self.logger.info(f"Total simulation records after shuffling: {len(all_records)}")
+        
         
         # 将处理后的信号插入待模拟表
         if all_records:
@@ -207,7 +208,7 @@ class AlphaSignalFactory:
                 new_exps = self.first_order_factory_with_day(
                     [exp], 
                     self.ts_ops, 
-                    days=None, 
+                    days=[63, 120, 252], 
                     multi_line=multi_line
                 )
                 for new_exp in new_exps:
@@ -417,8 +418,9 @@ class AlphaSignalFactory:
                      "group_cartesian_product(country, sector)"]
         
         # 根据地区创建不同的分组
-        if region == "GLB":
+        if region == "GLB" or region == "USA":
             # GLB地区没有assets字段，移除相关分组
+            # USA使用asset太多，这季度不能使用了
             groups = ["market", "sector", "industry", "subindustry",
                      cap_group, sector_cap_group, vol_group, liquidity_group]
         else:
@@ -551,7 +553,7 @@ def main():
     """
     主函数，用于从命令行调用生成优化alpha并插入数据库
     """
-    dates = ['20250815']
+    dates = ['20250823']
     # 设置日志
     logger = Logger()
     logger.info("Starting Alpha Signal Factory")
@@ -560,7 +562,7 @@ def main():
         try:
             # 创建工厂对象并运行
             factory = AlphaSignalFactory()
-            factory.process_signals(date, 1, 'test')
+            factory.process_signals(date_time=date, priority=1, mode='normal')
             logger.info("✅ Alpha signal processing completed successfully")
         except Exception as e:
             logger.error(f"❌ Alpha signal processing failed: {str(e)}")
@@ -570,3 +572,4 @@ def main():
 if __name__ == "__main__":
     main()
 #python src/alpha_signal_factory.py
+#已经优化了20250824和20250814

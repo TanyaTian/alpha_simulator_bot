@@ -208,7 +208,7 @@ def main():
     logger = Logger()
     logger.info("Starting PowerPoll Alpha Filter")
 
-    datetimes = ['20250823']
+    datetimes = ['20250824']
     
     try:
         # 初始化并运行
@@ -228,3 +228,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+#python src/powerpoll_alpha_filter.py
