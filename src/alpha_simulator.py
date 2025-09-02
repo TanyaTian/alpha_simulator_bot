@@ -362,7 +362,9 @@ class AlphaSimulator:
             status = progress_data.get("status")
             self.logger.info(f"Simulation batch status: {status}, children count: {len(children)}")
 
-            if status != "COMPLETE":
+            if status == "ERROR":
+                self.logger.info(f"Simulation failed with ERROR status. Progress URL: {simulation_progress_url}")
+            elif status != "COMPLETE":
                 self.logger.info("Simulation not complete. Will check again later.")
 
             # 插入所有child到simulation_tasks_table
