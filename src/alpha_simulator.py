@@ -438,7 +438,7 @@ class AlphaSimulator:
 
             if result is None:
                 # 未完成 或 临时错误 → 指数退避重试
-                delay = self._calculate_backoff_delay(task.retry_count)
+                delay = self._calculate_backoff_delay(task.backoff_factor, task.retry_count, task.max_delay)
                 task.retry_count += 1
                 task.next_check_time = now + delay
                 heapq.heappush(self.simulation_heap, task)
@@ -487,9 +487,9 @@ class AlphaSimulator:
             f"Active: {current_active}"
         )
 
-    def _calculate_backoff_delay(self, retry_count: int) -> float:
+    def _calculate_backoff_delay(self, backoff_factor, retry_count, max_delay: int) -> float:
         """计算下次检查延迟，带 jitter 防止雪崩"""
-        base = min(self.backoff_factor ** retry_count, self.max_delay)
+        base = min(backoff_factor ** retry_count, max_delay)
         # 添加随机抖动 (±10%)
         jitter = random.uniform(0.9, 1.1)
         return base * jitter
