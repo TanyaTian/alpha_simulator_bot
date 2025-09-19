@@ -6,6 +6,10 @@ import os
 import ast
 import json
 import threading
+import heapq
+import random
+from dataclasses import dataclass, field
+from typing import List, Dict, Optional, Union
 from collections import deque
 from pytz import timezone
 from logger import Logger  
@@ -14,6 +18,22 @@ from signal_manager import SignalManager
 from dao import SimulationTasksDAO  
 from dao import AlphaListPendingSimulatedDAO
 from config_manager import config_manager
+
+@dataclass
+class PendingSimulation:
+    """
+    表示一个待检查的模拟任务
+    使用最小堆按 next_check_time 排序
+    """
+    next_check_time: float
+    location_url: str
+    retry_count: int
+    record_ids: List[int]  # 关联的数据库 record id
+    backoff_factor: int = 2  # 指数退避因子
+    max_delay: int = 300     # 最大延迟 5 分钟
+
+    def __lt__(self, other):
+        return self.next_check_time < other.next_check_time
 
 class AlphaSimulator:
     """Alpha模拟器类，用于管理量化策略的模拟过程"""
@@ -63,21 +83,13 @@ class AlphaSimulator:
         # 构建文件路径体系
         self.state_file = os.path.join(self.data_dir, self.FILE_CONFIG["state_file"])
 
-        # 创建 Logger 实例
-        self.logger = Logger()
-
-        # 注册信号处理
-        if signal_manager:
-            signal_manager.add_handler(self.signal_handler)
-        else:
-            self.logger.warning("未提供 SignalManager,AlphaSimulator 无法注册信号处理函数")
 
         # 初始化DAO
         self.alpha_list_pending_simulated_dao = AlphaListPendingSimulatedDAO()
         self.simulation_task_dao = SimulationTasksDAO()
         
         # 初始化任务队列和映射字典
-        self.active_simulations = []
+        self.simulation_heap: List[PendingSimulation] = []  # 优先队列
         self.active_simulations_dict = {}  # 存储location_url到record_ids的映射
         self.active_update_time = time.time()
         self.lock = threading.Lock()  # 🔒 文件写入锁
@@ -94,8 +106,15 @@ class AlphaSimulator:
         if os.path.exists(self.state_file):
             with open(self.state_file, 'r') as f:
                 state = json.load(f)
-                self.active_simulations = state.get("active_simulations", [])
-                self.logger.info(f"Loaded {len(self.active_simulations)} previous active simulations from state.")
+                urls = state.get("active_simulations", [])
+                for url in urls:
+                    # 初始 retry_count=0，首次检查延迟 5 秒
+                    heapq.heappush(self.simulation_heap, PendingSimulation(
+                        next_check_time=time.time() + 5,
+                        location_url=url,
+                        retry_count=0
+                    ))
+                self.logger.info(f"Loaded {len(urls)} previous simulations into heap.")
 
 
     def _load_config_from_manager(self):
@@ -146,17 +165,13 @@ class AlphaSimulator:
         Returns:
             str or None: 模拟进度 URL（location_url），如果失败则返回 None
         """
+        backoff = 5 # 初始等待时间
         # 将 alpha_list 转换为 sim_data_list，用于 API 请求
         sim_data_list = self.generate_sim_data(alpha_list)
 
         # 如果 sim_data_list 为空（例如 alpha_list 中所有 alpha 都无效），记录错误并返回
         if not sim_data_list:
             self.logger.error("No valid simulation data generated from alpha_list")
-            # 将整个 alpha_list 写入失败文件
-            with open(self.fail_alphas, 'a', newline='') as file:
-                writer = csv.DictWriter(file, fieldnames=alpha_list[0].keys())
-                for alpha in alpha_list:
-                    writer.writerow(alpha)
             return None
 
         # 初始化重试计数器
@@ -190,9 +205,12 @@ class AlphaSimulator:
                     self.logger.error("Error occurred too many times, skipping this alpha batch and re-logging in.")
                     break
 
-                # 记录重试信息，等待 5 秒后继续
-                self.logger.error("Error in sending simulation request. Retrying after 5s...")
-                time.sleep(5)
+                
+                # ✅指数退避 + 抖动，最大等待 300s
+                sleep_time = min(backoff * (2 ** (count - 1)), 300)
+                sleep_time += random.uniform(0, 3)
+                self.logger.error(f"Error in sending simulation request. Retrying after {sleep_time}s...")
+                time.sleep(sleep_time)
                 count += 1
 
         # 如果请求失败（重试次数耗尽），记录错误
@@ -258,83 +276,94 @@ class AlphaSimulator:
         if not self.running:
             return
 
-        # 如果当前正在进行的模拟任务数量达到最大并发限制，等待 2 秒后退出
-        if len(self.active_simulations) >= self.max_concurrent:
-            self.logger.info(f"Max concurrent simulations reached ({self.max_concurrent}). Waiting 2 seconds")
-            time.sleep(2)
+        # 获取当前活跃数（来自 heap）
+        current_active = len(self.simulation_heap)
+        target_concurrent = self.max_concurrent
+        available_slots = target_concurrent - current_active
+
+        if available_slots <= 0:
+            self.logger.debug(f"Slots full: {current_active}/{target_concurrent}")
             return
 
-        self.logger.info('Loading new alphas for simulation from database...')
-        try:
-            # 使用新方法从数据库批量获取待回测alpha
-            db_records = self.fetch_pending_alphas_in_batches(self.batch_size)
-            
-            # 如果没有获取到alpha，直接返回
-            if not db_records:
-                self.logger.info("No pending alphas fetched from database.")
-                return
+        self.logger.info(f"Slots available: {available_slots}, trying to fill...")
 
-            # 提取需要模拟的数据
-            alpha_list = []
-            record_ids = []
-            for record in db_records:
-                try:
-                    # 尝试类型转换settings字段
-                    if 'settings' in record:
-                        if isinstance(record['settings'], str):
-                            try:
-                                record['settings'] = ast.literal_eval(record['settings'])
-                            except (ValueError, SyntaxError) as e:
-                                # 转换失败时记录错误并跳过此记录
-                                self.logger.error(f"类型转换失败 (record id={record['id']}): {e}")
+        for _ in range(available_slots):
+            try:
+                # 使用新方法从数据库批量获取待回测alpha
+                db_records = self.fetch_pending_alphas_in_batches(self.batch_size)
+                
+                # 如果没有获取到alpha，直接返回
+                if not db_records:
+                    self.logger.info("No pending alphas fetched from database.")
+                    return
+
+                # 提取需要模拟的数据
+                alpha_list = []
+                record_ids = []
+                for record in db_records:
+                    try:
+                        # 尝试类型转换settings字段
+                        if 'settings' in record:
+                            if isinstance(record['settings'], str):
+                                try:
+                                    record['settings'] = ast.literal_eval(record['settings'])
+                                except (ValueError, SyntaxError) as e:
+                                    # 转换失败时记录错误并跳过此记录
+                                    self.logger.error(f"类型转换失败 (record id={record['id']}): {e}")
+                                    continue
+                            elif not isinstance(record['settings'], dict):
+                                self.logger.error(f"settings字段类型错误 (record id={record['id']}): 期望字典类型, 实际是 {type(record['settings'])}")
                                 continue
-                        elif not isinstance(record['settings'], dict):
-                            self.logger.error(f"settings字段类型错误 (record id={record['id']}): 期望字典类型, 实际是 {type(record['settings'])}")
-                            continue
-                    
-                    # 构造alpha对象
-                    alpha = {
-                        'type': record['type'],
-                        'settings': record['settings'],
-                        'regular': record['regular']
-                    }
-                    alpha_list.append(alpha)
-                    record_ids.append(record['id'])
-                    
-                    # 记录当前批次的 alpha 信息
-                    self.logger.info(f"  - ID: {record['id']}, Alpha: {record['regular'][:50]}... with settings: {record['settings']}")
-                except Exception as e:
-                    self.logger.error(f"处理record时发生错误 (id={record['id']}): {e}")
-                    continue
+                        
+                        # 构造alpha对象
+                        alpha = {
+                            'type': record['type'],
+                            'settings': record['settings'],
+                            'regular': record['regular']
+                        }
+                        alpha_list.append(alpha)
+                        record_ids.append(record['id'])
+                        
+                        # 记录当前批次的 alpha 信息
+                        self.logger.info(f"  - ID: {record['id']}, Alpha: {record['regular'][:50]}... with settings: {record['settings']}")
+                    except Exception as e:
+                        self.logger.error(f"处理record时发生错误 (id={record['id']}): {e}")
+                        continue
 
-            # 调用 simulate_alpha，传入 alpha 列表
-            location_url = self.simulate_alpha(alpha_list)
+                # 调用 simulate_alpha，传入 alpha 列表
+                location_url = self.simulate_alpha(alpha_list)
 
-            # 如果模拟成功（返回 location_url），将 URL 添加到 active_simulations
-            if location_url:
-                self.active_simulations.append(location_url)
-                # 存储location_url到record_ids的映射
-                self.active_simulations_dict[location_url] = record_ids
-                self.active_update_time = time.time()
-                self.logger.info(f"Simulation started, location_url: {location_url}")
-                # 更新数据库状态为成功
-                self.alpha_list_pending_simulated_dao.batch_update_status_by_ids(record_ids, 'sent')
-            else:
-                self.logger.warning("Simulation failed, no location_url returned")
-                # 更新数据库状态为失败
-                self.alpha_list_pending_simulated_dao.batch_update_status_by_ids(record_ids, 'failed')
-
-        except Exception as e:
-            # 捕获其他异常，记录错误信息
-            self.logger.error(f"Error during simulation: {e}")
-            # 尝试更新数据库状态为失败
-            if 'record_ids' in locals() and record_ids:
-                try:
+                # 如果模拟成功（返回 location_url），将 URL 添加到 active_simulations
+                if location_url:
+                    # 提交成功，加入 heap，5 秒后首次检查
+                    heapq.heappush(self.simulation_heap, PendingSimulation(
+                        next_check_time=time.time() + 5,
+                        location_url=location_url,
+                        retry_count=0,
+                        record_ids=record_ids
+                    ))
+                    # 存储location_url到record_ids的映射
+                    self.active_simulations_dict[location_url] = record_ids
+                    self.active_update_time = time.time()
+                    self.logger.info(f"Simulation started, location_url: {location_url}")
+                    # 更新数据库状态为成功
+                    self.alpha_list_pending_simulated_dao.batch_update_status_by_ids(record_ids, 'sent')
+                else:
+                    self.logger.warning("Simulation failed, no location_url returned")
+                    # 更新数据库状态为失败
                     self.alpha_list_pending_simulated_dao.batch_update_status_by_ids(record_ids, 'failed')
-                except Exception as db_error:
-                    self.logger.error(f"Failed to update database status: {db_error}")
+
+            except Exception as e:
+                # 捕获其他异常，记录错误信息
+                self.logger.error(f"Error during simulation: {e}")
+                # 尝试更新数据库状态为失败
+                if 'record_ids' in locals() and record_ids:
+                    try:
+                        self.alpha_list_pending_simulated_dao.batch_update_status_by_ids(record_ids, 'failed')
+                    except Exception as db_error:
+                        self.logger.error(f"Failed to update database status: {db_error}")
     
-    def check_simulation_progress(self, simulation_progress_url):
+    def check_simulation_progress(self, simulation_progress_url)-> Union[List, None, bool]:
         """
         检查批量模拟的进度，获取 children 列表。
 
@@ -363,41 +392,23 @@ class AlphaSimulator:
             self.logger.info(f"Simulation batch status: {status}, children count: {len(children)}")
 
             if status != "COMPLETE":
-                self.logger.info("Simulation not complete. Will check again later.")
+                self.logger.info("Simulation not complete.")
 
-            # 插入所有child到simulation_tasks_table
-            if children:
-                data_list = [
-                    {
-                        'child_id': child,
-                        'submit_time': datetime.now(),  # 使用当前时间作为提交时间
-                        'status': 'pending',  # 默认状态
-                        'query_attempts': 0,  # 初始查询次数为0
-                        'last_query_time': None  # 初始无查询时间
-                    }
-                    for child in children
-                ]
-                self.simulation_task_dao.batch_insert(data_list)  # 批量插入
-                
-                # 打印children和record_ids的关联日志
-                record_ids = self.active_simulations_dict.get(simulation_progress_url)
-                if record_ids:
-                    self.logger.info(f"Associated children IDs: {children} with record IDs: {record_ids} for location: {simulation_progress_url}")
-                else:
-                    self.logger.warning(f"No record_ids found for location: {simulation_progress_url}")
+            # 打印children和record_ids的关联日志
+            record_ids = self.active_simulations_dict.get(simulation_progress_url)
+            if record_ids:
+                self.logger.info(f"Associated children IDs: {children} with record IDs: {record_ids} for location: {simulation_progress_url}")
+                self.active_simulations_dict.pop(simulation_progress_url, None)  # 移除已完成的映射,节省内存
+            else:
+                self.logger.warning(f"No record_ids found for location: {simulation_progress_url}")
             return children
 
         except requests.exceptions.HTTPError as e:
             remove_status_codes = {400, 403, 404, 410}
             if e.response.status_code in remove_status_codes:
                 self.logger.error(f"Simulation request failed with status {e.response.status_code}: {e}")
-                # Remove the simulation_progress_url from active_simulations and dictionary
-                if hasattr(self, 'active_simulations') and simulation_progress_url in self.active_simulations:
-                    self.active_simulations.remove(simulation_progress_url)
-                    if simulation_progress_url in self.active_simulations_dict:
-                        del self.active_simulations_dict[simulation_progress_url]
-                    self.logger.info(f"Removed {simulation_progress_url} from active_simulations and dictionary due to status code {e.response.status_code}")
-                return None
+                self.active_simulations_dict.pop(simulation_progress_url, None)  # 移除处理失败的映射数据,节省内存
+                return False
             else:
                 self.logger.error(f"Failed to fetch simulation progress: {e}")
                 
@@ -410,47 +421,86 @@ class AlphaSimulator:
             return None
 
     def check_simulation_status(self):
-        """检查所有活跃模拟的状态"""
-        current_time = time.time()
-        time_diff = current_time - self.active_update_time
-        if time_diff > 3600 and len(self.active_simulations) > 0:
-            self.logger.warning(f"active_update_time exceeds 1 hour (diff: {time_diff:.2f} seconds). Resetting active simulations.")
-            
-            self.session = config_manager.get_session()
-            self.active_simulations.clear()
-            self.logger.info("Active simulations cleared after re-signing in.")
+        """
+        检查到期任务，处理完成/失败/进行中状态
+        """
+        now = time.time()
+        checked_count = 0
+        completed_count = 0
+        failed_count = 0
 
-        if not self.active_simulations:
-            self.logger.info("No active simulations to check.")
-            return
+        while self.simulation_heap and self.simulation_heap[0].next_check_time <= now:
+            task = heapq.heappop(self.simulation_heap)
+            result = self.check_simulation_progress(task.location_url)
 
-        self.logger.info(f"Checking {len(self.active_simulations)} active simulations...")
-        count = 0
-        for sim_url in self.active_simulations[:]:
-            children = self.check_simulation_progress(sim_url)
-            if children is None:
-                count += 1
-                self.logger.debug(f"Simulation {sim_url} still in progress or failed.")
-                continue
+            if result is None:
+                # 未完成 或 临时错误 → 指数退避重试
+                delay = self._calculate_backoff_delay(task.retry_count)
+                task.retry_count += 1
+                task.next_check_time = now + delay
+                heapq.heappush(self.simulation_heap, task)
+                checked_count += 1
+                self.logger.debug(
+                    f"Simulation {task.location_url} not done. "
+                    f"Retry {task.retry_count}, next check in {delay:.1f}s"
+                )
 
-            self.logger.info(f"Simulation batch {sim_url} completed. Removing from active list and dictionary.")
-            self.active_simulations.remove(sim_url)
-            # 同时删除字典中的对应条目
-            if sim_url in self.active_simulations_dict:
-                del self.active_simulations_dict[sim_url]
-            self.active_update_time = time.time()
+            elif result is False:
+                # 永久错误 → 放弃，不再重试
+                self.logger.error(f"❌ Permanently failed: {task.location_url}")
+                failed_count += 1
+                # 不再入堆
 
-        self.logger.info(f"Total {count} simulations still in progress for account {config_manager._config['username']}.")
+            else:
+                # ✅ 模拟完成，result 是 children 列表
+                self.logger.info(f"✅ Simulation completed: {task.location_url}")
+                
+                # --- 入库 children ---
+                data_list = [
+                    {
+                        'child_id': child,
+                        'submit_time': datetime.now(),
+                        'status': 'pending',
+                        'query_attempts': 0,
+                        'last_query_time': None
+                    }
+                    for child in result
+                ]
+                try:
+                    self.simulation_task_dao.batch_insert(data_list)
+                    self.logger.info(f"💾 Inserted {len(result)} children for {task.location_url}")
+                except Exception as e:
+                    self.logger.error(f"Failed to insert children into DB: {e}")
+                    # 即使入库失败，任务也算完成，避免重复插入
 
+                completed_count += 1
+
+        # 日志统计
+        current_active = len(self.simulation_heap)
+        self.logger.info(
+            f"Checked: {checked_count}, "
+            f"Completed: {completed_count}, "
+            f"Failed: {failed_count}, "
+            f"Active: {current_active}"
+        )
+
+    def _calculate_backoff_delay(self, retry_count: int) -> float:
+        """计算下次检查延迟，带 jitter 防止雪崩"""
+        base = min(self.backoff_factor ** retry_count, self.max_delay)
+        # 添加随机抖动 (±10%)
+        jitter = random.uniform(0.9, 1.1)
+        return base * jitter
+    
     def save_state(self):
-        """保存当前状态"""
+        # 只保存 location_url 列表
+        urls = [task.location_url for task in self.simulation_heap]
         state = {
-            "active_simulations": self.active_simulations,
+            "active_simulations": urls,
             "timestamp": datetime.now().strftime(self.TIMESTAMP_FORMAT)
         }
         with open(self.state_file, 'w') as f:
             json.dump(state, f)
-        self.logger.info(f"Saved {len(self.active_simulations)} active simulations to {self.state_file}")
+        self.logger.info(f"Saved {len(urls)} active simulations to {self.state_file}")
 
     def fetch_pending_alphas_in_batches(self, batch_size):
         """从数据库批量查询待回测alpha
@@ -481,6 +531,21 @@ class AlphaSimulator:
         self.logger.info(f"Rotated region_set: moved {current_region} to the end")
         
         return alphas
+    
+    def _dynamic_sleep_and_check(self):
+        if not self.simulation_heap:
+            time.sleep(2)
+            return
+
+        now = time.time()
+        nearest_check = self.simulation_heap[0].next_check_time
+        sleep_time = max(0, nearest_check - now)
+
+        if sleep_time > 0:
+            self.logger.debug(f"💤 Sleeping {sleep_time:.2f}s until next check")
+            time.sleep(sleep_time)
+
+        self.check_simulation_status()  # 唤醒后立即检查
 
     def manage_simulations(self):
         """管理整个模拟过程"""
@@ -490,8 +555,7 @@ class AlphaSimulator:
 
         try:
             while self.running:
-                self.check_simulation_status()
+                self._dynamic_sleep_and_check()
                 self.load_new_alpha_and_simulate()
-                time.sleep(3)
         except KeyboardInterrupt:
             self.logger.info("Manual interruption detected.")
