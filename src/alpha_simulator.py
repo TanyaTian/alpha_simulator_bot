@@ -112,7 +112,8 @@ class AlphaSimulator:
                     heapq.heappush(self.simulation_heap, PendingSimulation(
                         next_check_time=time.time() + 5,
                         location_url=url,
-                        retry_count=0
+                        retry_count=0,
+                        record_ids=[]  # 之前的record_ids信息丢失，设置为空
                     ))
                 self.logger.info(f"Loaded {len(urls)} previous simulations into heap.")
 
