@@ -18,6 +18,7 @@ from signal_manager import SignalManager
 from dao import SimulationTasksDAO  
 from dao import AlphaListPendingSimulatedDAO
 from config_manager import config_manager
+from cache_manager import CacheManager
 
 @dataclass
 class PendingSimulation:
@@ -87,6 +88,14 @@ class AlphaSimulator:
         # 初始化DAO
         self.alpha_list_pending_simulated_dao = AlphaListPendingSimulatedDAO()
         self.simulation_task_dao = SimulationTasksDAO()
+
+        # 初始化缓存管理器
+        self.cache_manager = CacheManager(
+            alpha_dao=self.alpha_list_pending_simulated_dao,
+            task_dao=self.simulation_task_dao,
+            batch_number_for_every_queue=self.batch_number_for_every_queue
+        )
+        self.FLUSH_THRESHOLD = self.batch_number_for_every_queue
         
         # 初始化任务队列和映射字典
         self.simulation_heap: List[PendingSimulation] = []  # 优先队列
@@ -98,8 +107,10 @@ class AlphaSimulator:
         self._load_previous_state()
 
     def signal_handler(self, signum, frame):
-        self.logger.info(f"Received shutdown signal {signum}, , initiating shutdown...")
+        self.logger.info(f"Received shutdown signal {signum}, initiating shutdown...")
         self.running = False
+        self.logger.info("Flushing remaining data before exit...")
+        self.cache_manager.flush()
         self.save_state()
 
     def _load_previous_state(self):
@@ -128,9 +139,9 @@ class AlphaSimulator:
         self.batch_size = config.get('batch_size', 10)
         
         # 加载region_set参数，使用collections.deque实现循环队列
-        region_set = config.get('region_set', ['US'])
+        region_set = config.get('region_set', ['USA'])
         if not isinstance(region_set, list):
-            region_set = ['US']
+            region_set = ['USA']
         self.region_set = deque(region_set)
         
         # 使用配置中心的session
@@ -146,11 +157,24 @@ class AlphaSimulator:
         self.logger.info("Configuration reloaded due to config center update")
     
     def __del__(self):
-        """析构函数清理观察者注册"""
+        """析构函数，确保清理和数据刷新"""
+        # 清理配置观察者
         if hasattr(self, '_config_observer_handle'):
-            observer_list = config_manager._observers
-            if self._handle_config_change in observer_list:
-                observer_list.remove(self._handle_config_change)
+            try:
+                observer_list = config_manager._observers
+                if self._handle_config_change in observer_list:
+                    observer_list.remove(self._handle_config_change)
+            except Exception as e:
+                self.logger.error(f"Error removing config observer: {e}")
+
+        # 确保所有挂起的更改都被写入数据库
+        if hasattr(self, 'cache_manager') and self.cache_manager.get_dirty_items_count() > 0:
+            self.logger.info("Flushing remaining data in destructor...")
+            try:
+                self.cache_manager.flush()
+                self.logger.info("Destructor flush completed.")
+            except Exception as e:
+                self.logger.error(f"Error flushing data in destructor: {e}")
 
 
     def simulate_alpha(self, alpha_list):
@@ -259,64 +283,56 @@ class AlphaSimulator:
         
     def load_new_alpha_and_simulate(self):
         """
-        从数据库批量查询待回测alpha，然后进行模拟
-        
-        使用新方法fetch_pending_alphas_in_batches从数据库批量获取待回测alpha
-        每次查询的数量为self.batch_size，region为region_set的第一个元素
-        调用后轮转region_set，将当前region移到最后一个
-
-        Attributes:
-            self.batch_size (int): 每次查询的数量
-            self.region_set (deque): 地区循环队列
-            self.dao (AlphaListPendingSimulatedDAO): 数据访问对象
-            self.max_concurrent (int): 最大并发模拟数量
-            self.active_simulations (list): 正在进行的模拟任务列表
-            self.logger (Logger): 日志记录器
+        从缓存批量查询待回测alpha，然后进行模拟。
+        如果缓存为空，将从数据库按需加载。
         """
-        # 检查运行状态，如果 running 为 False，则退出
         if not self.running:
             return
 
-        # 获取当前活跃数（来自 heap）
         current_active = len(self.simulation_heap)
-        target_concurrent = self.max_concurrent
-        available_slots = target_concurrent - current_active
+        available_slots = self.max_concurrent - current_active
 
         if available_slots <= 0:
-            self.logger.debug(f"Slots full: {current_active}/{target_concurrent}")
+            self.logger.debug(f"Slots full: {current_active}/{self.max_concurrent}")
             return
 
         self.logger.info(f"Slots available: {available_slots}, trying to fill...")
 
         for _ in range(available_slots):
-            try:
-                # 使用新方法从数据库批量获取待回测alpha
-                db_records = self.fetch_pending_alphas_in_batches(self.batch_size)
-                
-                # 如果没有获取到alpha，直接返回
-                if not db_records:
-                    self.logger.info("No pending alphas fetched from database.")
-                    return
+            if not self.region_set:
+                self.logger.warning("No regions available in region_set")
+                continue
 
-                # 提取需要模拟的数据
+            try:
+                # 获取当前region并轮转
+                region = self.region_set[0]
+                current_region = self.region_set.popleft()
+                self.region_set.append(current_region)
+                
+                self.logger.info(f"Querying pending alphas for region: {region} from cache, batch_size: {self.batch_size}")
+                
+                # 从缓存获取待处理的alpha
+                db_records = self.cache_manager.get_pending_alphas_by_region(region, self.batch_size)
+                
+                if not db_records:
+                    self.logger.info(f"No pending alphas fetched from cache for region: {region}.")
+                    continue
+
                 alpha_list = []
                 record_ids = []
                 for record in db_records:
                     try:
-                        # 尝试类型转换settings字段
                         if 'settings' in record:
                             if isinstance(record['settings'], str):
                                 try:
                                     record['settings'] = ast.literal_eval(record['settings'])
                                 except (ValueError, SyntaxError) as e:
-                                    # 转换失败时记录错误并跳过此记录
                                     self.logger.error(f"类型转换失败 (record id={record['id']}): {e}")
                                     continue
                             elif not isinstance(record['settings'], dict):
                                 self.logger.error(f"settings字段类型错误 (record id={record['id']}): 期望字典类型, 实际是 {type(record['settings'])}")
                                 continue
                         
-                        # 构造alpha对象
                         alpha = {
                             'type': record['type'],
                             'settings': record['settings'],
@@ -324,45 +340,51 @@ class AlphaSimulator:
                         }
                         alpha_list.append(alpha)
                         record_ids.append(record['id'])
-                        
-                        # 记录当前批次的 alpha 信息
                         self.logger.info(f"  - ID: {record['id']}, Alpha: {record['regular'][:50]}... with settings: {record['settings']}")
                     except Exception as e:
                         self.logger.error(f"处理record时发生错误 (id={record['id']}): {e}")
                         continue
 
-                # 调用 simulate_alpha，传入 alpha 列表
+                if not alpha_list:
+                    self.logger.warning("No valid alphas to simulate in this batch.")
+                    continue
+
                 location_url = self.simulate_alpha(alpha_list)
 
-                # 如果模拟成功（返回 location_url），将 URL 添加到 active_simulations
                 if location_url:
-                    # 提交成功，加入 heap，5 秒后首次检查
                     heapq.heappush(self.simulation_heap, PendingSimulation(
                         next_check_time=time.time() + 5,
                         location_url=location_url,
                         retry_count=0,
                         record_ids=record_ids
                     ))
-                    # 存储location_url到record_ids的映射
                     self.active_simulations_dict[location_url] = record_ids
                     self.active_update_time = time.time()
                     self.logger.info(f"Simulation started, location_url: {location_url}")
-                    # 更新数据库状态为成功
-                    self.alpha_list_pending_simulated_dao.batch_update_status_by_ids(record_ids, 'sent')
+                    
+                    # 更新状态到缓存
+                    self.cache_manager.update_alpha_status(record_ids, 'sent')
                 else:
                     self.logger.warning("Simulation failed, no location_url returned")
-                    # 更新数据库状态为失败
-                    self.alpha_list_pending_simulated_dao.batch_update_status_by_ids(record_ids, 'failed')
+                    # 更新状态到缓存
+                    self.cache_manager.update_alpha_status(record_ids, 'failed')
+                
+                # 检查是否需要刷新缓存
+                if self.cache_manager.get_dirty_items_count() >= self.FLUSH_THRESHOLD:
+                    self.logger.info(f"Dirty items count ({self.cache_manager.get_dirty_items_count()}) reached threshold ({self.FLUSH_THRESHOLD}). Flushing...")
+                    self.cache_manager.flush()
 
             except Exception as e:
-                # 捕获其他异常，记录错误信息
                 self.logger.error(f"Error during simulation: {e}")
-                # 尝试更新数据库状态为失败
                 if 'record_ids' in locals() and record_ids:
                     try:
-                        self.alpha_list_pending_simulated_dao.batch_update_status_by_ids(record_ids, 'failed')
-                    except Exception as db_error:
-                        self.logger.error(f"Failed to update database status: {db_error}")
+                        # 异常情况下也走缓存
+                        self.cache_manager.update_alpha_status(record_ids, 'failed')
+                        if self.cache_manager.get_dirty_items_count() >= self.FLUSH_THRESHOLD:
+                            self.logger.info(f"Dirty items count ({self.cache_manager.get_dirty_items_count()}) reached threshold ({self.FLUSH_THRESHOLD}) on error. Flushing...")
+                            self.cache_manager.flush()
+                    except Exception as cache_error:
+                        self.logger.error(f"Failed to update cache status on error: {cache_error}")
     
     def check_simulation_progress(self, simulation_progress_url)-> Union[List, None, bool]:
         """
@@ -458,7 +480,7 @@ class AlphaSimulator:
                 # ✅ 模拟完成，result 是 children 列表
                 self.logger.info(f"✅ Simulation completed: {task.location_url}")
                 
-                # --- 入库 children ---
+                # --- 入库 children (到缓存) ---
                 data_list = [
                     {
                         'child_id': child,
@@ -470,11 +492,16 @@ class AlphaSimulator:
                     for child in result
                 ]
                 try:
-                    self.simulation_task_dao.batch_insert(data_list)
-                    self.logger.info(f"💾 Inserted {len(result)} children for {task.location_url}")
+                    self.cache_manager.add_simulation_tasks_batch(data_list)
+                    self.logger.info(f"💾 Buffered {len(result)} children for {task.location_url}")
+                    
+                    # 检查是否需要刷新缓存
+                    if self.cache_manager.get_dirty_items_count() >= self.FLUSH_THRESHOLD:
+                        self.logger.info(f"Dirty items count ({self.cache_manager.get_dirty_items_count()}) reached threshold ({self.FLUSH_THRESHOLD}). Flushing...")
+                        self.cache_manager.flush()
                 except Exception as e:
-                    self.logger.error(f"Failed to insert children into DB: {e}")
-                    # 即使入库失败，任务也算完成，避免重复插入
+                    self.logger.error(f"Failed to buffer children tasks: {e}")
+                    # 即使入缓存失败，任务也算完成，避免重复处理
 
                 completed_count += 1
 
@@ -505,35 +532,7 @@ class AlphaSimulator:
             json.dump(state, f)
         self.logger.info(f"Saved {len(urls)} active simulations to {self.state_file}")
 
-    def fetch_pending_alphas_in_batches(self, batch_size):
-        """从数据库批量查询待回测alpha
-        
-        Args:
-            batch_size (int): 每次查询的数量
-            
-        Returns:
-            list: 待回测的alpha列表
-        """
-        if not self.region_set:
-            self.logger.warning("No regions available in region_set")
-            return []
-            
-        # 获取当前region（第一个元素）
-        region = self.region_set[0]
-        self.logger.info(f"Querying pending alphas for region: {region}, batch_size: {batch_size}")
-        
-        # 使用DAO查询数据库
-        alphas = self.alpha_list_pending_simulated_dao.fetch_and_lock_pending_by_region(
-            region = region,
-            limit = batch_size
-        )
-        
-        # 轮转region_set：将当前region移到最后一个
-        current_region = self.region_set.popleft()
-        self.region_set.append(current_region)
-        self.logger.info(f"Rotated region_set: moved {current_region} to the end")
-        
-        return alphas
+
     
     def _dynamic_sleep_and_check(self):
         if not self.simulation_heap:
