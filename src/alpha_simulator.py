@@ -31,7 +31,7 @@ class PendingSimulation:
     retry_count: int
     record_ids: List[int]  # 关联的数据库 record id
     backoff_factor: int = 2  # 指数退避因子
-    max_delay: int = 60     # 最大延迟 1 分钟
+    max_delay: int = 30     # 最大延迟 30s
 
     def __lt__(self, other):
         return self.next_check_time < other.next_check_time
