@@ -31,7 +31,7 @@ class PendingSimulation:
     retry_count: int
     record_ids: List[int]  # 关联的数据库 record id
     backoff_factor: int = 2  # 指数退避因子
-    max_delay: int = 300     # 最大延迟 5 分钟
+    max_delay: int = 60     # 最大延迟 1 分钟
 
     def __lt__(self, other):
         return self.next_check_time < other.next_check_time
@@ -533,31 +533,28 @@ class AlphaSimulator:
         self.logger.info(f"Saved {len(urls)} active simulations to {self.state_file}")
 
 
-    
-    def _dynamic_sleep_and_check(self):
-        if not self.simulation_heap:
-            time.sleep(2)
-            return
-
-        now = time.time()
-        nearest_check = self.simulation_heap[0].next_check_time
-        sleep_time = max(0, nearest_check - now)
-
-        if sleep_time > 0:
-            self.logger.debug(f"💤 Sleeping {sleep_time:.2f}s until next check")
-            time.sleep(sleep_time)
-
-        self.check_simulation_status()  # 唤醒后立即检查
 
     def manage_simulations(self):
-        """管理整个模拟过程"""
+        """管理整个模拟过程（采用固定轮询模式）"""
         if not self.session:
             self.logger.error("Failed to sign in. Exiting...")
             return
 
+        # 设置一个固定的轮询间隔（例如：3秒）
+        POLLING_INTERVAL = 3
+        self.logger.info(f"Starting simulation management with a fixed polling interval of {POLLING_INTERVAL} seconds.")
+
         try:
             while self.running:
-                self._dynamic_sleep_and_check()
+                # 1. 检查所有到期任务的状态
+                self.check_simulation_status()
+                
+                # 2. 尝试加载新任务以填充空闲槽位
                 self.load_new_alpha_and_simulate()
+                
+                # 3. 固定休眠，等待下一个轮询周期
+                self.logger.debug(f"Main loop sleeping for {POLLING_INTERVAL}s...")
+                time.sleep(POLLING_INTERVAL)
+                
         except KeyboardInterrupt:
             self.logger.info("Manual interruption detected.")
