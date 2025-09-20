@@ -30,8 +30,8 @@ class PendingSimulation:
     location_url: str
     retry_count: int
     record_ids: List[int]  # 关联的数据库 record id
-    backoff_factor: int = 2  # 指数退避因子
-    max_delay: int = 30     # 最大延迟 30s
+    backoff_factor: int = 64  # 指数退避因子
+    min_delay: int = 3     # 最小延迟 3s
 
     def __lt__(self, other):
         return self.next_check_time < other.next_check_time
@@ -353,7 +353,7 @@ class AlphaSimulator:
 
                 if location_url:
                     heapq.heappush(self.simulation_heap, PendingSimulation(
-                        next_check_time=time.time() + 5,
+                        next_check_time=time.time() + 30, # 首次检查延迟 30 秒
                         location_url=location_url,
                         retry_count=0,
                         record_ids=record_ids
@@ -460,7 +460,7 @@ class AlphaSimulator:
 
             if result is None:
                 # 未完成 或 临时错误 → 指数退避重试
-                delay = self._calculate_backoff_delay(task.backoff_factor, task.retry_count, task.max_delay)
+                delay = self._calculate_backoff_delay(task.backoff_factor, task.retry_count, task.min_delay)
                 task.retry_count += 1
                 task.next_check_time = now + delay
                 heapq.heappush(self.simulation_heap, task)
@@ -514,9 +514,9 @@ class AlphaSimulator:
             f"Active: {current_active}"
         )
 
-    def _calculate_backoff_delay(self, backoff_factor, retry_count, max_delay: int) -> float:
+    def _calculate_backoff_delay(self, backoff_factor, retry_count, min_delay: int) -> float:
         """计算下次检查延迟，带 jitter 防止雪崩"""
-        base = min(backoff_factor ** retry_count, max_delay)
+        base = max(backoff_factor / (2 ** retry_count), min_delay)
         # 添加随机抖动 (±10%)
         jitter = random.uniform(0.9, 1.1)
         return base * jitter
