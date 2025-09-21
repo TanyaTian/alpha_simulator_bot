@@ -31,7 +31,7 @@ class PendingSimulation:
     retry_count: int
     record_ids: List[int]  # 关联的数据库 record id
     backoff_factor: int = 128  # 指数退避因子
-    min_delay: int = 1     # 最小延迟 3s
+    min_delay: int = 3     # 最小延迟 3s
 
     def __lt__(self, other):
         return self.next_check_time < other.next_check_time
@@ -180,102 +180,66 @@ class AlphaSimulator:
     def simulate_alpha(self, alpha_list):
         """
         模拟一组 alpha 表达式，通过 API 提交批量模拟请求（同步版本）。
-
-        Args:
-            alpha_list (list): 包含多个 alpha 数据的列表，每个 alpha 是一个字典，包含 type、settings 和 regular 字段
-                - type: 字符串，模拟类型，例如 "REGULAR"
-                - settings: 字典，模拟设置，例如 {'instrumentType': 'EQUITY', ...}
-                - regular: 字符串，alpha 表达式，例如 "ts_quantile(winsorize(...), 22)"
-
-        Returns:
-            str or None: 模拟进度 URL（location_url），如果失败则返回 None
         """
+        start_time = time.time()
         backoff = 5 # 初始等待时间
-        # 将 alpha_list 转换为 sim_data_list，用于 API 请求
         sim_data_list = self.generate_sim_data(alpha_list)
 
-        # 如果 sim_data_list 为空（例如 alpha_list 中所有 alpha 都无效），记录错误并返回
         if not sim_data_list:
             self.logger.error("No valid simulation data generated from alpha_list")
             return None
 
-        # 初始化重试计数器
         count = 0
-
-        # 重试循环，最多尝试 35 次
         while True:
             try:
-                # 使用 self.session 发送 POST 请求到 WorldQuant Brain 平台的 API
                 response = self.session.post('https://api.worldquantbrain.com/simulations', json=sim_data_list)
-
-                # 检查 HTTP 状态码，如果失败（例如 4xx 或 5xx），抛出异常
                 response.raise_for_status()
 
-                # 检查响应头中是否包含 Location 字段
                 if "Location" in response.headers:
-                    # 如果成功获取 Location，记录日志并返回
+                    duration = time.time() - start_time
+                    self.logger.info(f"[Performance] action=simulate_alpha_batch duration={duration:.4f}s batch_size={len(alpha_list)}")
                     self.logger.info("Alpha batch location retrieved successfully.")
                     self.logger.info(f"Location: {response.headers['Location']}")
                     return response.headers['Location']
 
             except requests.exceptions.RequestException as e:
-                # 捕获 HTTP 请求相关的异常（例如网络错误、服务器错误）
                 self.logger.error(f"Error in sending simulation request: {e}")
-
-                # 如果重试次数超过 35 次，重新登录并跳出循环
                 if count > 35:
-                    # 调用 sign_in 方法重新登录
-                    
                     self.session = config_manager.get_session()
                     self.logger.error("Error occurred too many times, skipping this alpha batch and re-logging in.")
                     break
-
                 
-                # ✅指数退避 + 抖动，最大等待 300s
-                sleep_time = min(backoff * (2 ** (count - 1)), 300)
+                sleep_time = min(backoff + (5 * count), 300)
                 sleep_time += random.uniform(0, 3)
                 self.logger.error(f"Error in sending simulation request. Retrying after {sleep_time}s...")
                 time.sleep(sleep_time)
                 count += 1
 
-        # 如果请求失败（重试次数耗尽），记录错误
+        duration = time.time() - start_time
+        self.logger.error(f"[Performance] action=simulate_alpha_batch status=failed duration={duration:.4f}s batch_size={len(alpha_list)}")
         self.logger.error(f"Simulation request failed after {count} attempts for alpha batch")
         return None
     
     def generate_sim_data(self, alpha_list):
         """
         将 alpha_list 转换为 sim_data_list，用于批量模拟。
-
-        Args:
-            alpha_list (list): 包含多个 alpha 字典的列表，每个字典包含 type、settings 和 regular 字段
-                - type: 字符串，模拟类型，例如 "REGULAR"
-                - settings: 字典，模拟设置，例如 {'instrumentType': 'EQUITY', ...}
-                - regular: 字符串，alpha 表达式，例如 "ts_quantile(winsorize(...), 22)"
-
-        Returns:
-            list: 包含多个 simulation_data 字典的列表，格式符合 API 要求
         """
         sim_data_list = []
-
         for alpha in alpha_list:
-            # 确保 alpha 包含必要的字段
             if not all(key in alpha for key in ['type', 'settings', 'regular']):
                 self.logger.error(f"Invalid alpha data, missing required fields: {alpha}")
                 continue
 
-            # 直接使用 settings 字段（数据库返回的是字典）
             settings = alpha['settings']
             if not isinstance(settings, dict):
                 self.logger.error(f"Unexpected type for settings: {type(settings)}. Expected dict. Skipping this alpha.")
                 continue
 
-            # 构造 simulation_data 字典
             simulation_data = {
                 'type': alpha['type'],
                 'settings': settings,
                 'regular': alpha['regular']
             }
-
             sim_data_list.append(simulation_data)
 
         self.logger.info(f"Generated sim_data_list with {len(sim_data_list)} entries")
@@ -284,7 +248,6 @@ class AlphaSimulator:
     def load_new_alpha_and_simulate(self):
         """
         从缓存批量查询待回测alpha，然后进行模拟。
-        如果缓存为空，将从数据库按需加载。
         """
         if not self.running:
             return
@@ -304,16 +267,17 @@ class AlphaSimulator:
                 continue
 
             try:
-                # 获取当前region并轮转
                 region = self.region_set[0]
                 current_region = self.region_set.popleft()
                 self.region_set.append(current_region)
                 
                 self.logger.info(f"Querying pending alphas for region: {region} from cache, batch_size: {self.batch_size}")
                 
-                # 从缓存获取待处理的alpha
+                load_cache_start_time = time.time()
                 db_records = self.cache_manager.get_pending_alphas_by_region(region, self.batch_size)
-                
+                load_cache_duration = time.time() - load_cache_start_time
+                self.logger.info(f"[Performance] action=load_alphas_from_cache duration={load_cache_duration:.4f}s region={region} count={len(db_records)}")
+
                 if not db_records:
                     self.logger.info(f"No pending alphas fetched from cache for region: {region}.")
                     continue
@@ -352,59 +316,57 @@ class AlphaSimulator:
                 location_url = self.simulate_alpha(alpha_list)
 
                 if location_url:
+                    insert_heap_start_time = time.time()
                     heapq.heappush(self.simulation_heap, PendingSimulation(
-                        next_check_time=time.time() + 10, # 首次检查延迟 5 秒
+                        next_check_time=time.time() + 10,
                         location_url=location_url,
                         retry_count=0,
                         record_ids=record_ids
                     ))
+                    insert_heap_duration = time.time() - insert_heap_start_time
+                    self.logger.info(f"[Performance] action=insert_to_heap duration={insert_heap_duration:.4f}s")
+
                     self.active_simulations_dict[location_url] = record_ids
                     self.active_update_time = time.time()
                     self.logger.info(f"Simulation started, location_url: {location_url}")
                     
-                    # 更新状态到缓存
                     self.cache_manager.update_alpha_status(record_ids, 'sent')
                 else:
                     self.logger.warning("Simulation failed, no location_url returned")
-                    # 更新状态到缓存
                     self.cache_manager.update_alpha_status(record_ids, 'failed')
                 
-                # 检查是否需要刷新缓存
                 if self.cache_manager.get_dirty_items_count() >= self.FLUSH_THRESHOLD:
                     self.logger.info(f"Dirty items count ({self.cache_manager.get_dirty_items_count()}) reached threshold ({self.FLUSH_THRESHOLD}). Flushing...")
+                    flush_start_time = time.time()
                     self.cache_manager.flush()
+                    flush_duration = time.time() - flush_start_time
+                    self.logger.info(f"[Performance] action=flush_cache_on_threshold duration={flush_duration:.4f}s")
 
             except Exception as e:
                 self.logger.error(f"Error during simulation: {e}")
                 if 'record_ids' in locals() and record_ids:
                     try:
-                        # 异常情况下也走缓存
                         self.cache_manager.update_alpha_status(record_ids, 'failed')
                         if self.cache_manager.get_dirty_items_count() >= self.FLUSH_THRESHOLD:
                             self.logger.info(f"Dirty items count ({self.cache_manager.get_dirty_items_count()}) reached threshold ({self.FLUSH_THRESHOLD}) on error. Flushing...")
+                            flush_err_start_time = time.time()
                             self.cache_manager.flush()
+                            flush_err_duration = time.time() - flush_err_start_time
+                            self.logger.info(f"[Performance] action=flush_cache_on_error duration={flush_err_duration:.4f}s")
                     except Exception as cache_error:
                         self.logger.error(f"Failed to update cache status on error: {cache_error}")
     
     def check_simulation_progress(self, simulation_progress_url)-> Union[List, None, bool]:
         """
         检查批量模拟的进度，获取 children 列表。
-
-        Args:
-            simulation_progress_url (str): 批量模拟的进度 URL，例如 "https://api.worldquantbrain.com/simulations/12345"
-
-        Returns:
-            list or None: 如果成功返回 children 列表，否则返回 None
         """
         try:
             simulation_progress = self.session.get(simulation_progress_url)
             simulation_progress.raise_for_status()
 
-            # 检查是否包含 Retry-After 头，表示服务端暂时不可用
             if simulation_progress.headers.get("Retry-After", 0) != 0:
                 return None
 
-            # 解析响应，提取 children 和状态
             progress_data = simulation_progress.json()
             children = progress_data.get("children", [])
             if not children:
@@ -419,11 +381,10 @@ class AlphaSimulator:
             elif status != "COMPLETE":
                 self.logger.info("Simulation not complete. Will check again later.")
 
-            # 打印children和record_ids的关联日志
             record_ids = self.active_simulations_dict.get(simulation_progress_url)
             if record_ids:
                 self.logger.info(f"Associated children IDs: {children} with record IDs: {record_ids} for location: {simulation_progress_url}")
-                self.active_simulations_dict.pop(simulation_progress_url, None)  # 移除已完成的映射,节省内存
+                self.active_simulations_dict.pop(simulation_progress_url, None)
             else:
                 self.logger.warning(f"No record_ids found for location: {simulation_progress_url}")
             return children
@@ -432,16 +393,14 @@ class AlphaSimulator:
             remove_status_codes = {400, 403, 404, 410}
             if e.response.status_code in remove_status_codes:
                 self.logger.error(f"Simulation request failed with status {e.response.status_code}: {e}")
-                self.active_simulations_dict.pop(simulation_progress_url, None)  # 移除处理失败的映射数据,节省内存
+                self.active_simulations_dict.pop(simulation_progress_url, None)
                 return False
             else:
                 self.logger.error(f"Failed to fetch simulation progress: {e}")
-                
                 self.session = config_manager.get_session()
                 return None
         except requests.exceptions.RequestException as e:
             self.logger.error(f"Failed to fetch simulation progress: {e}")
-            
             self.session = config_manager.get_session()
             return None
 
@@ -456,10 +415,13 @@ class AlphaSimulator:
 
         while self.simulation_heap and self.simulation_heap[0].next_check_time <= now:
             task = heapq.heappop(self.simulation_heap)
+            
+            check_progress_start_time = time.time()
             result = self.check_simulation_progress(task.location_url)
+            check_progress_duration = time.time() - check_progress_start_time
+            self.logger.info(f"[Performance] action=check_single_progress duration={check_progress_duration:.4f}s url={task.location_url}")
 
             if result is None:
-                # 未完成 或 临时错误 → 指数退避重试
                 delay = self._calculate_backoff_delay(task.backoff_factor, task.retry_count, task.min_delay)
                 task.retry_count += 1
                 task.next_check_time = now + delay
@@ -471,16 +433,12 @@ class AlphaSimulator:
                 )
 
             elif result is False:
-                # 永久错误 → 放弃，不再重试
                 self.logger.error(f"❌ Permanently failed: {task.location_url}")
                 failed_count += 1
-                # 不再入堆
 
             else:
-                # ✅ 模拟完成，result 是 children 列表
                 self.logger.info(f"✅ Simulation completed: {task.location_url}")
                 
-                # --- 入库 children (到缓存) ---
                 data_list = [
                     {
                         'child_id': child,
@@ -492,20 +450,24 @@ class AlphaSimulator:
                     for child in result
                 ]
                 try:
+                    buffer_start_time = time.time()
                     self.cache_manager.add_simulation_tasks_batch(data_list)
+                    buffer_duration = time.time() - buffer_start_time
+                    self.logger.info(f"[Performance] action=buffer_completed_tasks duration={buffer_duration:.4f}s count={len(result)}")
+                    
                     self.logger.info(f"💾 Buffered {len(result)} children for {task.location_url}")
                     
-                    # 检查是否需要刷新缓存
                     if self.cache_manager.get_dirty_items_count() >= self.FLUSH_THRESHOLD:
                         self.logger.info(f"Dirty items count ({self.cache_manager.get_dirty_items_count()}) reached threshold ({self.FLUSH_THRESHOLD}). Flushing...")
+                        flush_start_time = time.time()
                         self.cache_manager.flush()
+                        flush_duration = time.time() - flush_start_time
+                        self.logger.info(f"[Performance] action=flush_cache_on_completion duration={flush_duration:.4f}s")
                 except Exception as e:
                     self.logger.error(f"Failed to buffer children tasks: {e}")
-                    # 即使入缓存失败，任务也算完成，避免重复处理
 
                 completed_count += 1
 
-        # 日志统计
         current_active = len(self.simulation_heap)
         self.logger.info(
             f"Checked: {checked_count}, "
@@ -517,12 +479,10 @@ class AlphaSimulator:
     def _calculate_backoff_delay(self, backoff_factor, retry_count, min_delay: int) -> float:
         """计算下次检查延迟，带 jitter 防止雪崩"""
         base = max(backoff_factor / (2 ** retry_count), min_delay)
-        # 添加随机抖动 (±10%)
         jitter = random.uniform(0.9, 1.1)
         return base * jitter
     
     def save_state(self):
-        # 只保存 location_url 列表
         urls = [task.location_url for task in self.simulation_heap]
         state = {
             "active_simulations": urls,
@@ -540,19 +500,33 @@ class AlphaSimulator:
             self.logger.error("Failed to sign in. Exiting...")
             return
 
-        # 设置一个固定的轮询间隔（例如：3秒）
         POLLING_INTERVAL = 3
         self.logger.info(f"Starting simulation management with a fixed polling interval of {POLLING_INTERVAL} seconds.")
+        
+        last_check_end_time = None
 
         try:
             while self.running:
                 # 1. 检查所有到期任务的状态
+                check_start_time = time.time()
                 self.check_simulation_status()
+                check_end_time = time.time()
+                self.logger.info(f"[Performance] action=polling_check_all duration={check_end_time - check_start_time:.4f}s")
                 
                 # 2. 尝试加载新任务以填充空闲槽位
+                load_start_time = time.time()
                 self.load_new_alpha_and_simulate()
+                load_end_time = time.time()
+                self.logger.info(f"[Performance] action=load_and_simulate_all duration={load_end_time - load_start_time:.4f}s")
+
+                # 3. 计算并记录从上次检查结束到本次加载完成的耗时
+                if last_check_end_time is not None:
+                    idle_to_load_duration = load_end_time - last_check_end_time
+                    self.logger.info(f"[Performance] action=cycle_check_to_load_finish duration={idle_to_load_duration:.4f}s")
                 
-                # 3. 固定休眠，等待下一个轮询周期
+                last_check_end_time = time.time()
+
+                # 4. 固定休眠，等待下一个轮询周期
                 self.logger.debug(f"Main loop sleeping for {POLLING_INTERVAL}s...")
                 time.sleep(POLLING_INTERVAL)
                 
