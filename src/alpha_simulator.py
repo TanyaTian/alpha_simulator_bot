@@ -30,8 +30,8 @@ class PendingSimulation:
     location_url: str
     retry_count: int
     record_ids: List[int]  # 关联的数据库 record id
-    backoff_factor: int = 64  # 指数退避因子
-    min_delay: int = 3     # 最小延迟 3s
+    backoff_factor: int = 128  # 指数退避因子
+    min_delay: int = 1     # 最小延迟 3s
 
     def __lt__(self, other):
         return self.next_check_time < other.next_check_time
@@ -353,7 +353,7 @@ class AlphaSimulator:
 
                 if location_url:
                     heapq.heappush(self.simulation_heap, PendingSimulation(
-                        next_check_time=time.time() + 30, # 首次检查延迟 30 秒
+                        next_check_time=time.time() + 10, # 首次检查延迟 5 秒
                         location_url=location_url,
                         retry_count=0,
                         record_ids=record_ids
