@@ -68,6 +68,10 @@ class CacheManager:
         """
         self.logger.info(f"Cache for region '{region}' is empty. Refilling from database...")
         try:
+            # 在补充前，先尝试将现有的“脏”数据写入数据库
+            if self.get_dirty_items_count() > 0:
+                self.logger.info("Dirty data detected before refilling cache. Flushing to database first.")
+                self.flush()
             # 调用DAO层获取指定region的一批待处理alphas
             new_alphas = self.alpha_dao.fetch_and_lock_pending_by_region(
                 region=region,

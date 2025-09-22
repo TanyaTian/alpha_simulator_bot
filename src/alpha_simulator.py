@@ -101,7 +101,6 @@ class AlphaSimulator:
         self.simulation_heap: List[PendingSimulation] = []  # 优先队列
         self.active_simulations_dict = {}  # 存储location_url到record_ids的映射
         self.active_update_time = time.time()
-        self.lock = threading.Lock()  # 🔒 文件写入锁
 
         # 加载上次未完成的 active_simulations
         self._load_previous_state()
