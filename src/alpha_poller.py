@@ -183,7 +183,7 @@ class AlphaPoller:
             while True:
                 try:
                     # 获取100个pending状态的任务
-                    pending_tasks = self.simulation_tasks_dao.list_pending_tasks_lite(limit=10)
+                    pending_tasks = self.simulation_tasks_dao.list_pending_tasks_lite(limit=100)
                     
                     if pending_tasks:
                         self.logger.info(f"Found {len(pending_tasks)} pending tasks")
