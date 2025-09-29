@@ -203,7 +203,7 @@ class AlphaSimulator:
 
             except requests.exceptions.RequestException as e:
                 self.logger.error(f"Error in sending simulation request: {e}")
-                if count > 35:
+                if count > 10:
                     self.session = config_manager.get_session()
                     self.logger.error("Error occurred too many times, skipping this alpha batch and re-logging in.")
                     break
