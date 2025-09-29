@@ -443,7 +443,7 @@ class AlphaFilter:
         self.logger.info(f"Found regions in alpha_result: {regions}")
         all_region_exist = True
         for region in regions:
-            if not self.alpha_signal_dao.region_and_datetime_exists(region, datetime):
+            if not self.alpha_signal_dao.region_and_datetime_exists(region, self.date_str):
                 all_region_exist = False
                 break
 
