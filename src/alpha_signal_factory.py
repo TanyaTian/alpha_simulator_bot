@@ -203,19 +203,19 @@ class AlphaSignalFactory:
             total_ops = ts_ops_count + group_ops_count
             
             # 应用优化条件
-            if ts_ops_count < 2 and total_ops < 3:
+            if ts_ops_count < 2 and total_ops < 4:
                 # 时间序列优化
                 new_exps = self.first_order_factory_with_day(
                     [exp], 
                     self.ts_ops, 
-                    days=[63, 120, 252], 
+                    days=[20, 63, 120, 252], 
                     multi_line=multi_line
                 )
                 for new_exp in new_exps:
                     # 创建新记录：更新表达式, 添加decay
                     optimized_signals.append((alpha_id, new_exp , decay))
                     
-            if group_ops_count < 2 and total_ops < 3:
+            if group_ops_count < 2 and total_ops < 4:
                 # 分组优化
                 new_exps = self.get_group_second_order_factory(
                     [exp], 
@@ -241,8 +241,8 @@ class AlphaSignalFactory:
         """
         count = 0
         for op in operations:
-            if op in expression:
-                count += 1
+            # 统计每个运算符出现的实际次数，避免部分匹配
+            count += expression.count(op + '(')  # 运算符后面通常跟着括号
         return count
 
     def prepare_simulation_data(self, signal_optimize_set, settings_dict, priority):
@@ -340,16 +340,16 @@ class AlphaSignalFactory:
         """
         output = []
         vectors = ["cap"]
-        
+        """
         # 分组定义（统一管理避免重复）
         region_groups = {
             "CHN": ['pv13_h_min2_sector', 'pv13_di_6l', 'pv13_rcsed_6l', 'pv13_di_5l', 
-                   'pv13_di_4l', 'pv13_di_3l', 'pv13_di_2l', 'pv13_di_1极', 'pv13_parent', 'pv13_level',
+                   'pv13_di_4l', 'pv13_di_3l', 'pv13_di_2l', 'pv13_di_1', 'pv13_parent', 'pv13_level',
                    'sta1_top3000c30', 'sta1_top3000c20', 'sta1_top3000c10', 'sta1_top3000c2', 'sta1_top3000c5',
                    'sta2_top3000_fact4_c10', 'sta2_top2000_fact4_c50', 'sta2_top3000_fact3_c20'],
                    
             "HKG": ['pv13_10_f3_g2_minvol_1m_sector', 'pv13_10_minvol_1m_sector', 'pv13_20_minvol_1m_sector', 
-                   'pv13极_2_minvol_1m_sector', 'pv13_5_minvol极1m_sector', 'pv13_1l_scibr', 'pv13_3l_scibr',
+                   'pv13_2_minvol_1m_sector', 'pv13_5_minvol1m_sector', 'pv13_1l_scibr', 'pv13_3l_scibr',
                    'pv13_2l_scibr', 'pv13_4l_scibr', 'pv13_5l_scibr',
                    'sta1_allc50', 'sta1_allc5', 'sta1_allxjp_513_c20', 'sta1_top2000xjp_513_c5',
                    'sta2_all_xjp_513_all_fact4_c10', 'sta2_top2000_xjp_513_top2000_fact3_c10',
@@ -417,10 +417,12 @@ class AlphaSignalFactory:
                      "group_cartesian_product(country, exchange)",
                      "group_cartesian_product(country, sector)"]
         
+
+        
         # 根据地区创建不同的分组
-        if region == "GLB" or region == "USA":
+        if region == "GLB" or region == "USA" or region == "EUR":
             # GLB地区没有assets字段，移除相关分组
-            # USA使用asset太多，这季度不能使用了
+            # USA/EUR使用asset太多，这季度不能使用了
             groups = ["market", "sector", "industry", "subindustry",
                      cap_group, sector_cap_group, vol_group, liquidity_group]
         else:
@@ -435,6 +437,35 @@ class AlphaSignalFactory:
         # 为ASI、EUR、GLB地区添加combo_group和country_group
         if region in ["ASI", "EUR", "GLB"]:
             groups += combo_group + country_group
+        """
+        # 定义各地区的group集合
+        usa_atom_group = ["market", "sector", "industry", "subindustry", "exchange"]
+        
+        asi_atom_group = ["market", "sector", "industry", "subindustry", "exchange", "country",
+                        "group_cartesian_product(country, market)", 
+                        "group_cartesian_product(country, industry)", 
+                        "group_cartesian_product(country, subindustry)", 
+                        "group_cartesian_product(country, exchange)",
+                        "group_cartesian_product(country, sector)"]
+        
+        eur_atom_group = asi_atom_group.copy()
+        glb_atom_group = asi_atom_group.copy()
+        
+        chn_atom_group = ["market", "sector", "industry", "subindustry", "exchange"]
+        
+        # 根据region选择对应的group集合（直接匹配大写）
+        if region == 'USA':
+            groups = usa_atom_group
+        elif region == 'ASI':
+            groups = asi_atom_group
+        elif region == 'EUR':
+            groups = eur_atom_group
+        elif region == 'GLB':
+            groups = glb_atom_group
+        elif region == 'CHN':
+            groups = chn_atom_group
+        else:
+            raise ValueError(f"无效的region: {region}，必须是'USA', 'ASI', 'EUR', 'GLB'或'CHN'（大写）")
         
         # 多行处理模式
         if multi_line:
@@ -525,35 +556,12 @@ class AlphaSignalFactory:
         
         return output
         
-    def main(self):
-        """
-        主方法，用于从命令行调用生成优化alpha并插入数据库
-        """
-        # 设置日志
-        self.logger.info("Starting Alpha Signal Factory")
-        
-        try:
-            # 获取当前日期时间作为处理时间
-            current_time = datetime.now()
-            self.logger.info(f"Processing signals at: {current_time}")
-            
-            # 调用process_signals方法处理信号
-            self.process_signals(
-                date_time=current_time,
-                priority=5,
-                mode='normal',
-                filter_words=''
-            )
-            self.logger.info("✅ Alpha signal processing completed successfully")
-        except Exception as e:
-            self.logger.error(f"❌ Alpha signal processing failed: {str(e)}")
-            raise
 
 def main():
     """
-    主函数，用于从命令行调用生成优化alpha并插入数据库
+    主函数,用于从命令行调用生成优化alpha并插入数据库
     """
-    dates = ['20250823']
+    dates = ['20251003']  # 示例日期列表
     # 设置日志
     logger = Logger()
     logger.info("Starting Alpha Signal Factory")
@@ -562,7 +570,7 @@ def main():
         try:
             # 创建工厂对象并运行
             factory = AlphaSignalFactory()
-            factory.process_signals(date_time=date, priority=1, mode='normal')
+            factory.process_signals(date_time=date, priority=1, mode='normal', filter_words = '')
             logger.info("✅ Alpha signal processing completed successfully")
         except Exception as e:
             logger.error(f"❌ Alpha signal processing failed: {str(e)}")
