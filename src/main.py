@@ -55,18 +55,7 @@ async def main():
 
     # --- 在独立的线程中运行同步阻塞的组件 ---
 
-    # 1. 初始化并运行AlphaSimulator
-    try:
-        simulator = AlphaSimulator(signal_manager=signal_manager)
-        logger.info("AlphaSimulator初始化成功。")
-        # 在executor中运行manage_simulations
-        loop.run_in_executor(executor, simulator.manage_simulations)
-        logger.info("AlphaSimulator管理已在工作线程中启动。")
-    except Exception as e:
-        logger.error(f"AlphaSimulator初始化或启动失败: {e}")
-        return
-
-    # 2. 初始化并运行ProcessSimulatedAlphas
+    # 1. 初始化并运行ProcessSimulatedAlphas
     processor = ProcessSimulatedAlphas(
         output_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), '..\output'),
         min_sharpe=1.58, 
@@ -76,7 +65,7 @@ async def main():
     loop.run_in_executor(executor, processor.manage_process)
     logger.info("ProcessSimulatedAlphas已在工作线程中启动。")
 
-    # 3. 初始化并运行AlphaFilter
+    # 2. 初始化并运行AlphaFilter
     alpha_filter = AlphaFilter(signal_manager=signal_manager)
     loop.run_in_executor(
         executor, 
@@ -88,10 +77,9 @@ async def main():
         )
     )
     logger.info("AlphaFilter监控已在工作线程中启动。")
-
+    
     # --- 运行异步组件 ---
-
-    # 4. 初始化AlphaPoller并启动异步轮询
+    # 3. 初始化AlphaPoller并启动异步轮询
     poller = AlphaPoller()
     # 使用asyncio.create_task在事件循环中直接运行异步任务
     polling_task = asyncio.create_task(poller.start_polling_async())
@@ -108,6 +96,18 @@ async def main():
         await asyncio.sleep(2)
         executor.shutdown(wait=True)
         logger.info("所有工作线程已关闭。")
+
+    # 4. 初始化并运行AlphaSimulator
+    try:
+        simulator = AlphaSimulator(signal_manager=signal_manager)
+        logger.info("AlphaSimulator初始化成功。")
+        # 在executor中运行manage_simulations
+        loop.run_in_executor(executor, simulator.manage_simulations)
+        logger.info("AlphaSimulator管理已在工作线程中启动。")
+    except Exception as e:
+        logger.error(f"AlphaSimulator初始化或启动失败: {e}")
+        return
+
 
 
 if __name__ == "__main__":
