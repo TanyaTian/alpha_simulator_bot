@@ -1,95 +1,118 @@
+# 导入必要的库
+import asyncio  # 异步I/O操作的核心库
 import os
 import signal
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+
+# 导入项目模块
 from alpha_simulator import AlphaSimulator
 from process_simulated_alphas import ProcessSimulatedAlphas
-from utils import load_config
 from logger import Logger 
 from signal_manager import SignalManager
 from alpha_filter import AlphaFilter
 from alpha_poller import AlphaPoller
 from config_manager import config_manager, run_config_server
 
-
-# 创建全局 Logger 实例
+# 创建全局Logger实例
 logger = Logger()
 
-def main():
+# 异步主函数
+async def main():
     """
-    主函数，初始化 AlphaSimulator 并启动模拟流程。
-    从配置文件读取 username、password、max_concurrent 和 batch_number_for_every_queue。
+    主函数，现在是异步的。
+    它负责初始化所有组件并管理整个应用的生命周期。
     """
-    logger.debug("main方法开始执行")
+    logger.debug("异步main函数开始执行")
 
-    # 🔥 启动配置中心服务（后台线程）
-    config_server_thread = threading.Thread(
-        target=run_config_server,
-        kwargs={'port': 5001},
-        daemon=True
+    # 使用run_in_executor在独立的线程中运行Flask配置服务器，避免阻塞事件循环
+    loop = asyncio.get_running_loop()
+    config_server_thread = loop.run_in_executor(
+        None,  # 使用默认的ThreadPoolExecutor
+        lambda: run_config_server(port=5001)
     )
-    config_server_thread.start()
+    logger.info("配置中心服务已在后台线程启动，地址 http://localhost:5001")
 
-    time.sleep(1)
-    logger.info("Config center server started on http://localhost:5001")
+    # 等待一小段时间，确保配置服务已加载初始配置
+    await asyncio.sleep(2)
 
-    # 从配置文件读取凭据
-    config = config_manager._config
-    if config is None:
-        logger.error("Failed to load configuration. Exiting...")
+    # 检查配置是否加载成功
+    if config_manager._config is None:
+        logger.error("加载配置失败，程序退出。")
         return
     
-    # 创建 SignalManager
+    # 创建并注册信号管理器，用于优雅地关闭程序
     signal_manager = SignalManager()
-    # 注册信号处理
+    # loop.add_signal_handler在Windows上不受完全支持，对于SIGINT/SIGTERM，
+    # signal.signal在主线程中设置通常是有效的。
+    # 在此场景下，我们将保持原有的signal.signal设置，因为它在独立的线程中也能工作。
     signal.signal(signal.SIGTERM, signal_manager.handle_signal)
     signal.signal(signal.SIGINT, signal_manager.handle_signal)
     
+    # 创建一个线程池执行器来运行所有同步阻塞的任务
+    executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='SyncWorker')
 
-    # 初始化 AlphaSimulator
+    # --- 在独立的线程中运行同步阻塞的组件 ---
+
+    # 1. 初始化并运行AlphaSimulator
     try:
-        # 直接使用ConfigManager的类变量访问配置
         simulator = AlphaSimulator(signal_manager=signal_manager)
-        logger.info("AlphaSimulator initialized successfully.")
-    except KeyError as e:
-        logger.error(f"Missing configuration parameter: {e}")
-        return
+        logger.info("AlphaSimulator初始化成功。")
+        # 在executor中运行manage_simulations
+        loop.run_in_executor(executor, simulator.manage_simulations)
+        logger.info("AlphaSimulator管理已在工作线程中启动。")
     except Exception as e:
-        logger.error(f"Unexpected error during initialization: {e}")
+        logger.error(f"AlphaSimulator初始化或启动失败: {e}")
         return
-    
-    # 构建基础路径
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(script_dir)
-    output_dir = os.path.join(project_root, 'output')
-    
-    # 实例化 ProcessSimulatedAlphas 并启动调度
-    processor = ProcessSimulatedAlphas(
-        output_dir, 
-        1.58, 1.0, 
-        signal_manager)          
-    processor.manage_process()
-    
-    
-    # 初始化 AlphaFilter
-    alpha_filter = AlphaFilter(signal_manager=signal_manager)
-    # 启动监控线程
-    alpha_filter.start_monitoring(
-        interval_minutes=180,
-        min_fitness=0.7,
-        min_sharpe=1.2,
-        corr_threshold=0.75
-    )
-    
-    
-    # 使用ConfigManager中的配置启动Poller（无需传参）
-    poller = AlphaPoller()
-    poller.start_polling()  # 启动轮询线程
 
-    # 启动模拟管理
-    logger.info("Starting simulation management...") 
-    simulator.manage_simulations()
-    
+    # 2. 初始化并运行ProcessSimulatedAlphas
+    processor = ProcessSimulatedAlphas(
+        output_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), '..\output'),
+        min_sharpe=1.58, 
+        min_fitness=1.0, 
+        signal_manager=signal_manager
+    )
+    loop.run_in_executor(executor, processor.manage_process)
+    logger.info("ProcessSimulatedAlphas已在工作线程中启动。")
+
+    # 3. 初始化并运行AlphaFilter
+    alpha_filter = AlphaFilter(signal_manager=signal_manager)
+    loop.run_in_executor(
+        executor, 
+        lambda: alpha_filter.start_monitoring(
+            interval_minutes=180,
+            min_fitness=0.7,
+            min_sharpe=1.2,
+            corr_threshold=0.75
+        )
+    )
+    logger.info("AlphaFilter监控已在工作线程中启动。")
+
+    # --- 运行异步组件 ---
+
+    # 4. 初始化AlphaPoller并启动异步轮询
+    poller = AlphaPoller()
+    # 使用asyncio.create_task在事件循环中直接运行异步任务
+    polling_task = asyncio.create_task(poller.start_polling_async())
+    logger.info("异步AlphaPoller已启动。")
+
+    # 等待所有任务完成（实际上是无限运行，直到接收到退出信号）
+    # 我们将等待异步轮询任务，其他同步任务在后台线程运行
+    try:
+        await polling_task
+    except asyncio.CancelledError:
+        logger.info("主任务被取消，开始关闭...")
+    finally:
+        # 在关闭前给其他线程一些时间来响应信号
+        await asyncio.sleep(2)
+        executor.shutdown(wait=True)
+        logger.info("所有工作线程已关闭。")
+
 
 if __name__ == "__main__":
-    main()
+    try:
+        # 运行异步主函数
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("程序被用户或系统中断，正在关闭...")
