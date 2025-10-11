@@ -1,49 +1,80 @@
-import time
-import pandas as pd
-import requests
-import urllib3
-import schedule
-import threading
-import os
-import csv
-from datetime import datetime, timedelta
-import ast
-from typing import List
-from alpha_prune import calculate_correlations, generate_comparison_data
-from logger import Logger
-from signal_manager import SignalManager
-from io import StringIO
-from dao import SimulatedAlphasDAO  
-from dao import StoneGoldBagDAO
-from config_manager import config_manager
+print(">>> [TRACE] Entering process_simulated_alphas module top")
+
+# ===== Import tracing =====
+print(">>> importing time"); import time
+print(">>> importing pandas"); import pandas as pd
+print(">>> importing requests"); import requests
+print(">>> importing urllib3"); import urllib3
+print(">>> importing schedule"); import schedule
+print(">>> importing threading"); import threading
+print(">>> importing os"); import os
+print(">>> importing csv"); import csv
+print(">>> importing datetime"); from datetime import datetime, timedelta
+print(">>> importing ast"); import ast
+print(">>> importing typing"); from typing import List
+print(">>> importing alpha_prune"); from alpha_prune import calculate_correlations, generate_comparison_data
+print(">>> importing logger"); from logger import Logger
+print(">>> importing signal_manager"); from signal_manager import SignalManager
+print(">>> importing io"); from io import StringIO
+print(">>> importing dao"); from dao import SimulatedAlphasDAO  
+print(">>> importing dao.StoneGoldBagDAO"); from dao import StoneGoldBagDAO
+print(">>> importing config_manager"); from config_manager import config_manager
+
+print(">>> [TRACE] Finished all imports, before class definition")
+
+# ====== Class definition tracing ======
+print(">>> [TRACE] About to define class ProcessSimulatedAlphas")
 
 class ProcessSimulatedAlphas:
     def __init__(self, output_dir, specified_sharpe, specified_fitness, signal_manager=None):
+        print(">>> Entering ProcessSimulatedAlphas.__init__")
         self.output_dir = output_dir
         self.SPECIFIED_SHARPE = specified_sharpe
         self.SPECIFIED_FITNESS = specified_fitness
         self.logger = Logger()
+        self.logger.info("[PSA_INIT] Logger initialized.")
 
         self.alpha_ids: List[str] = []
         self.total = 0
         self.idx = 0
         self.date_str = self.get_yesterday_date()
+        self.logger.info("[PSA_INIT] Basic attributes initialized.")
+
+        self.logger.info("[PSA_INIT] Calling _load_config_from_manager...")
         self._load_config_from_manager()
+        self.logger.info("[PSA_INIT] _load_config_from_manager finished.")
+
         self._scheduler_running = False
-        self._scheduler_thread = None
+        self.logger.info("[PSA_INIT] Scheduler flags initialized.")
+
+        self.logger.info("[PSA_INIT] Initializing SimulatedAlphasDAO...")
         self.simulated_alphas_dao = SimulatedAlphasDAO()
+        self.logger.info("[PSA_INIT] SimulatedAlphasDAO initialized.")
+
+        self.logger.info("[PSA_INIT] Initializing StoneGoldBagDAO...")
         self.stone_gold_bag_dao = StoneGoldBagDAO()
-        self.config_lock = threading.Lock()  # 添加配置锁确保线程安全
+        self.logger.info("[PSA_INIT] StoneGoldBagDAO initialized.")
+
+        self.logger.info("[PSA_INIT] Initializing config lock...")
+        self.config_lock = threading.Lock()
+        self.logger.info("[PSA_INIT] Config lock initialized.")
 
         # 注册配置更新回调
+        self.logger.info("[PSA_INIT] Registering config update observer...")
         config_manager.on_config_change(self.on_config_update)
         self.logger.info("Registered config update observer")
+        self.logger.info("[PSA_INIT] Config update observer registered.")
 
         # 注册信号处理
+        self.logger.info("[PSA_INIT] Registering signal handler...")
         if signal_manager:
             signal_manager.add_handler(self.handle_exit_signal)
+            self.logger.info("[PSA_INIT] Signal handler registered.")
         else:
             self.logger.warning("未提供 SignalManager,ProcessSimulatedAlphas 无法注册信号处理函数")
+        
+        self.logger.info("[PSA_INIT] __init__ method finished.")
+        print(">>> [TRACE] Finished defining class ProcessSimulatedAlphas")
 
     def handle_exit_signal(self, signum, frame):
         self.logger.info(f"Received shutdown signal {signum}, saving unfinished alpha IDs...")
@@ -427,63 +458,54 @@ class ProcessSimulatedAlphas:
         
         self.logger.info("Resuming alpha ID processing with updated list")
 
-    def start_daily_schedule(self):
-        """安全启动定时任务"""
-        if self._scheduler_running:
-            self.logger.warning("Scheduler already running, skipping...")
-            return
-
+    def run_scheduler(self):
+        """
+        运行每日调度程序。
+        此方法旨在由执行器在单独的线程中运行。
+        """
         self.logger.info("Starting daily schedule...")
-        # 获取并记录下次运行时间
-        next_run = schedule.next_run()
-        self.logger.info(f"Next scheduled task will run at: {next_run}")
         self._scheduler_running = True
+
         def job():
             self.logger.info("Scheduled task triggered at 12:30.")
-            
-            # 1. 刷新date_str
             self.date_str = self.get_yesterday_date()
             self.logger.info(f"Processing date updated to: {self.date_str}")
-            
-            # 调用新的方法处理每日alpha IDs
             self.process_daily_alpha_ids(self.date_str)
 
-        # 清除可能存在的旧任务
         schedule.clear()
         schedule.every().day.at("12:30").do(job).tag('daily_alpha_task')
+        
+        self.logger.info(f"Next scheduled task will run at: {schedule.next_run()}")
 
-        def run_scheduler():
-            i = 0
-            while self._scheduler_running:  # 使用标志位控制循环
-                schedule.run_pending()
-                # 记录下次运行时间
-                if i % 300 == 0 :
-                    i = 0
-                    next_run = schedule.next_run()
-                    self.logger.info(f"Next scheduled task in: {(next_run - datetime.now()).total_seconds()/3600:.2f} hours")
-                i += 1
-                time.sleep(1)
-            self.logger.info("Scheduler thread stopped")
+        i = 0
+        while self._scheduler_running:
+            schedule.run_pending()
+            if i % 300 == 0:
+                i = 0
+                next_run = schedule.next_run()
+                if next_run:
+                    self.logger.info(f"Next scheduled task in: {(next_run - datetime.now()).total_seconds() / 3600:.2f} hours")
+            i += 1
+            time.sleep(1)
+        
+        self.logger.info("Scheduler loop stopped.")
 
-        # 确保旧线程已停止
-        if self._scheduler_thread and self._scheduler_thread.is_alive():
-            self._scheduler_thread.join(timeout=1)
+    def run_processing_loop(self):
+        """
+        运行主要的alpha ID处理循环。
+        此方法旨在由执行器在单独的线程中运行。
+        """
+        self.logger.info("==== 启动初始化 ====")
+        self.initialize_alpha_ids()
+        self.logger.info("==== 启动处理循环 ====")
+        self.process_alpha_ids_loop()
 
-        self._scheduler_thread = threading.Thread(
-            target=run_scheduler,
-            name="AlphaScheduler",
-            daemon=True
-        )
-        self._scheduler_thread.start()
-        self.logger.info("Scheduler thread started.")
-    
     def stop_daily_schedule(self):
         """安全停止定时任务"""
-        self._scheduler_running = False
-        schedule.clear()
-        if self._scheduler_thread:
-            self._scheduler_thread.join(timeout=5)
-        self.logger.info("Daily scheduler stopped")
+        if self._scheduler_running:
+            self._scheduler_running = False
+            schedule.clear()
+            self.logger.info("Daily scheduler stopped")
         
     def on_config_update(self, new_config):
         """
@@ -507,25 +529,14 @@ class ProcessSimulatedAlphas:
                 ).start()
             else:
                 self.logger.info("init_date not updated or same as before")
-    
-    def manage_process(self):
-        self.logger.info("==== 启动初始化 ====")
-        self.initialize_alpha_ids()
 
-        # 调试：打印当前任务数
-        self.logger.debug(f"Pre-check jobs: {len(schedule.get_jobs())}")
-        
-        self.logger.info("==== 启动定时任务 ====")
-        self.start_daily_schedule()
-        
-        # 再次验证
-        self.logger.debug(f"Post-check jobs: {len(schedule.get_jobs())}")
+print(">>> [TRACE] Finished defining class ProcessSimulatedAlphas (end of class body)")
 
-        self.logger.info("==== 启动处理循环 ====")
-        self.process_thread = threading.Thread(target=self.process_alpha_ids_loop, daemon=True)
-        self.process_thread.start()
-
-    
+if __name__ == "__main__":
+    print(">>> [TRACE] Entering __main__ block of process_simulated_alphas")
+    psa = ProcessSimulatedAlphas("./output", 1.5, 1.0)
+    print(">>> [TRACE] Instance created successfully.")
+  
 
 """
 data_dir = "./data"

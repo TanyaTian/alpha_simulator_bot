@@ -36,7 +36,6 @@ class AlphaFilter:
         self.os_alpha_ids: Optional[Dict[str, List]] = None
         self.os_alpha_rets: Optional[pd.DataFrame] = None
         self.logger = Logger()
-        self._monitor_thread = None
         self._stop_event = threading.Event()
 
         self.simulated_alphas_dao = SimulatedAlphasDAO()
@@ -460,62 +459,44 @@ class AlphaFilter:
         # 保存结果
         self.save_filtered_alphas(filtered_alphas, df)
 
-    def start_monitoring(self, interval_minutes: int = 90, 
-                        min_fitness: float = 0.7, 
-                        min_sharpe: float = 1.2, 
-                        corr_threshold: float = 0.7):
+    def start_monitoring(self, interval_minutes: int = 90,
+                         min_fitness: float = 0.7,
+                         min_sharpe: float = 1.2,
+                         corr_threshold: float = 0.7):
         """
-        启动监控线程，定期检查新数据文件
-        
-        参数:
-            interval_minutes: 检查间隔时间(分钟)
-            min_fitness: fitness阈值
-            min_sharpe: sharpe阈值
-            corr_threshold: 相关性阈值
+        运行监控循环，该循环定期检查新数据。
+        此方法旨在由执行器在单独的线程中运行。
         """
-        if self._monitor_thread and self._monitor_thread.is_alive():
-            self.logger.warning("Monitoring thread is already running")
-            return
-
+        self.logger.info(f"Started monitoring (checking every {interval_minutes} minutes)")
         self._stop_event.clear()
-        
-        def monitor_loop():
-            while not self._stop_event.is_set():
-                try:
-                    # Get max datetime from database
-                    max_datetime = self.simulated_alphas_dao.get_max_datetime()
-                    
-                    if max_datetime and max_datetime > self.date_str:
-                        self.logger.info(f"New data available (max datetime: {max_datetime}), current date: {self.date_str}")
-                        self.logger.info(f"Starting processing for date {self.date_str}...")
-                        self.process_alphas(min_fitness, min_sharpe, corr_threshold)
-                        self._advance_date()
-                    else:
-                        self.logger.debug(f"No new data found for date {self.date_str}, max datetime: {max_datetime}")
-                except Exception as e:
-                    self.logger.error(f"Error during monitoring: {e}")
-                    self.logger.debug(f"Exception details: {traceback.format_exc()}")
-                
-                # Wait for interval or until stopped
-                self.logger.info(f"No new alpha to filter. Sleeping for {interval_minutes / 60} hour.")
-                self._stop_event.wait(timeout=interval_minutes * 60)
 
-        self._monitor_thread = threading.Thread(
-            target=monitor_loop,
-            name="AlphaFilterMonitor",
-            daemon=True
-        )
-        self._monitor_thread.start()
-        self.logger.info(f"Started monitoring thread (checking every {interval_minutes} minutes)")
+        while not self._stop_event.is_set():
+            try:
+                # Get max datetime from database
+                max_datetime = self.simulated_alphas_dao.get_max_datetime()
+
+                if max_datetime and max_datetime > self.date_str:
+                    self.logger.info(f"New data available (max datetime: {max_datetime}), current date: {self.date_str}")
+                    self.logger.info(f"Starting processing for date {self.date_str}...")
+                    self.process_alphas(min_fitness, min_sharpe, corr_threshold)
+                    self._advance_date()
+                else:
+                    self.logger.debug(f"No new data found for date {self.date_str}, max datetime: {max_datetime}")
+            except Exception as e:
+                self.logger.error(f"Error during monitoring: {e}")
+                self.logger.debug(f"Exception details: {traceback.format_exc()}")
+
+            # Wait for interval or until stopped
+            self.logger.info(f"No new alpha to filter. Sleeping for {interval_minutes / 60} hour.")
+            self._stop_event.wait(timeout=interval_minutes * 60)
+        
+        self.logger.info("Monitoring loop has stopped.")
+
 
     def stop_monitoring(self):
-        """停止监控线程"""
-        if self._monitor_thread and self._monitor_thread.is_alive():
-            self._stop_event.set()
-            self._monitor_thread.join(timeout=5)
-            self.logger.info("Monitoring thread stopped")
-        else:
-            self.logger.warning("No active monitoring thread to stop")
+        """通知监控循环停止"""
+        self.logger.info("Signaling monitoring loop to stop...")
+        self._stop_event.set()
 
     def _advance_date(self):
         """将日期前进一天"""

@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 # 导入项目模块
 from alpha_simulator import AlphaSimulator
-from process_simulated_alphas import ProcessSimulatedAlphas
+#from process_simulated_alphas import ProcessSimulatedAlphas
 from logger import Logger 
 from signal_manager import SignalManager
 from alpha_filter import AlphaFilter
@@ -44,9 +44,6 @@ async def main():
     
     # 创建并注册信号管理器，用于优雅地关闭程序
     signal_manager = SignalManager()
-    # loop.add_signal_handler在Windows上不受完全支持，对于SIGINT/SIGTERM，
-    # signal.signal在主线程中设置通常是有效的。
-    # 在此场景下，我们将保持原有的signal.signal设置，因为它在独立的线程中也能工作。
     signal.signal(signal.SIGTERM, signal_manager.handle_signal)
     signal.signal(signal.SIGINT, signal_manager.handle_signal)
     
@@ -54,17 +51,37 @@ async def main():
     executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='SyncWorker')
 
     # --- 在独立的线程中运行同步阻塞的组件 ---
-
     # 1. 初始化并运行ProcessSimulatedAlphas
+    """
+    logger.info("正在初始化 ProcessSimulatedAlphas...")
+
+    # 从配置中心获取 output_dir，这是更稳健的做法
+    # 构建基础路径
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    output_dir = os.path.join(project_root, 'output')
+    if not output_dir:
+        logger.error("'output_dir' not found. Please define it.")
+        return
+
+    logger.info(f"Found output directory: {output_dir}")
+    
+
     processor = ProcessSimulatedAlphas(
-        output_dir=os.path.join(os.path.dirname(os.path.abspath(__file__)), '..\output'),
+        output_dir=output_dir,
         min_sharpe=1.58, 
         min_fitness=1.0, 
         signal_manager=signal_manager
     )
-    loop.run_in_executor(executor, processor.manage_process)
-    logger.info("ProcessSimulatedAlphas已在工作线程中启动。")
-
+    logger.info("ProcessSimulatedAlphas 初始化完成。")
+    # 启动调度器和处理循环在不同的线程中
+    loop.run_in_executor(executor, processor.run_scheduler)
+    logger.info("ProcessSimulatedAlphas 调度器已在工作线程中启动。")
+    loop.run_in_executor(executor, processor.run_processing_loop)
+    logger.info("ProcessSimulatedAlphas 处理循环已在工作线程中启动。")
+    """
+    
+    
     # 2. 初始化并运行AlphaFilter
     alpha_filter = AlphaFilter(signal_manager=signal_manager)
     loop.run_in_executor(
@@ -81,33 +98,30 @@ async def main():
     # --- 运行异步组件 ---
     # 3. 初始化AlphaPoller并启动异步轮询
     poller = AlphaPoller()
-    # 使用asyncio.create_task在事件循环中直接运行异步任务
     polling_task = asyncio.create_task(poller.start_polling_async())
     logger.info("异步AlphaPoller已启动。")
 
-    # 等待所有任务完成（实际上是无限运行，直到接收到退出信号）
-    # 我们将等待异步轮询任务，其他同步任务在后台线程运行
+    # 4. 初始化并运行AlphaSimulator (移至此处以确保启动)
+    try:
+        simulator = AlphaSimulator(signal_manager=signal_manager)
+        logger.info("AlphaSimulator初始化成功。")
+        loop.run_in_executor(executor, simulator.manage_simulations)
+        logger.info("AlphaSimulator管理已在工作线程中启动。")
+    except Exception as e:
+        logger.error(f"AlphaSimulator初始化或启动失败: {e}")
+        return # 如果模拟器启动失败，则退出
+
+    # 等待异步的poller任务完成（此任务会无限运行，从而保持主程序存活）
     try:
         await polling_task
     except asyncio.CancelledError:
         logger.info("主任务被取消，开始关闭...")
     finally:
         # 在关闭前给其他线程一些时间来响应信号
+        logger.info("主任务结束，正在关闭线程池执行器...")
         await asyncio.sleep(2)
         executor.shutdown(wait=True)
         logger.info("所有工作线程已关闭。")
-
-    # 4. 初始化并运行AlphaSimulator
-    try:
-        simulator = AlphaSimulator(signal_manager=signal_manager)
-        logger.info("AlphaSimulator初始化成功。")
-        # 在executor中运行manage_simulations
-        loop.run_in_executor(executor, simulator.manage_simulations)
-        logger.info("AlphaSimulator管理已在工作线程中启动。")
-    except Exception as e:
-        logger.error(f"AlphaSimulator初始化或启动失败: {e}")
-        return
-
 
 
 if __name__ == "__main__":

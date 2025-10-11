@@ -159,7 +159,7 @@ class AlphaPoller:
             self.logger.warning("Children list is empty, skipping processing.")
             return
 
-        async with aiohttp.ClientSession(session=self.session) as session:
+        async with aiohttp.ClientSession(cookies=self.session.cookies) as session:
             # 创建一组并发任务
             tasks = [self.fetch_alpha_details(session, child) for child in children]
             # 等待所有任务完成
