@@ -159,6 +159,10 @@ class AlphaPoller:
             self.logger.warning("Children list is empty, skipping processing.")
             return
 
+        # 在每次处理新批次前，调用 get_session() 来测试并可能刷新 session
+        # 这可以防止因 session 过期而导致整个批次失败
+        self.session = config_manager.get_session()
+
         async with aiohttp.ClientSession(cookies=self.session.cookies) as session:
             # 创建一组并发任务
             tasks = [self.fetch_alpha_details(session, child) for child in children]
