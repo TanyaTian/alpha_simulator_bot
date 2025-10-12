@@ -9,11 +9,13 @@ from concurrent.futures import ThreadPoolExecutor
 # 导入项目模块
 from alpha_simulator import AlphaSimulator
 #from process_simulated_alphas import ProcessSimulatedAlphas
-from logger import Logger 
+from logger import Logger
 from signal_manager import SignalManager
 from alpha_filter import AlphaFilter
 from alpha_poller import AlphaPoller
 from config_manager import config_manager, run_config_server
+from alpha_calculator import AlphaCalculator
+from alpha_checker import AlphaChecker
 
 # 创建全局Logger实例
 logger = Logger()
@@ -48,10 +50,10 @@ async def main():
     signal.signal(signal.SIGINT, signal_manager.handle_signal)
     
     # 创建一个线程池执行器来运行所有同步阻塞的任务
-    executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix='SyncWorker')
+    executor = ThreadPoolExecutor(max_workers=6, thread_name_prefix='SyncWorker')
 
     # --- 在独立的线程中运行同步阻塞的组件 ---
-    # 1. 初始化并运行ProcessSimulatedAlphas
+    # 1. 初始化并运行ProcessSimulatedAlphas (已停用)
     """
     logger.info("正在初始化 ProcessSimulatedAlphas...")
 
@@ -80,6 +82,36 @@ async def main():
     loop.run_in_executor(executor, processor.run_processing_loop)
     logger.info("ProcessSimulatedAlphas 处理循环已在工作线程中启动。")
     """
+
+    # --- 启动新的重构模块 ---
+
+    # 3. 初始化并运行 AlphaCalculator
+    try:
+        logger.info("正在初始化 AlphaCalculator...")
+        specified_sharpe = config_manager.get('specified_sharpe', 0.8)
+        specified_fitness = config_manager.get('specified_fitness', 0.8)
+        corr_threshold = config_manager.get('corr_threshold', 0.8)
+        alpha_calculator = AlphaCalculator(
+            specified_sharpe=specified_sharpe,
+            specified_fitness=specified_fitness,
+            corr_threshold=corr_threshold,
+            signal_manager=signal_manager
+        )
+        loop.run_in_executor(executor, alpha_calculator.start)
+        logger.info("AlphaCalculator 调度器已在工作线程中启动。")
+    except Exception as e:
+        logger.error(f"AlphaCalculator 初始化或启动失败: {e}")
+        return
+
+    # 4. 初始化并运行 AlphaChecker
+    try:
+        logger.info("正在初始化 AlphaChecker...")
+        alpha_checker = AlphaChecker(signal_manager=signal_manager)
+        loop.run_in_executor(executor, alpha_checker.start)
+        logger.info("AlphaChecker 调度器已在工作线程中启动。")
+    except Exception as e:
+        logger.error(f"AlphaChecker 初始化或启动失败: {e}")
+        return
     
     
     # 2. 初始化并运行AlphaFilter
