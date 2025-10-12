@@ -135,6 +135,11 @@ class AlphaCalculator:
         self.pending_alpha_checks_dao = PendingAlphaChecksDAO()
         self._scheduler_running = False
         self.init_date = config_manager.get('init_date_str')
+        try:
+            self.loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self.loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(self.loop)
 
         config_manager.on_config_change(self.on_config_update)
         if signal_manager:
@@ -175,7 +180,7 @@ class AlphaCalculator:
         def job():
             # Since this job is called from a sync scheduler, we need a way to run our async job.
             # The best way is to schedule it on the main event loop.
-            asyncio.run_coroutine_threadsafe(self.run_calculation_job(), asyncio.get_event_loop())
+            asyncio.run_coroutine_threadsafe(self.run_calculation_job(), self.loop)
 
         schedule.every().day.at("12:30").do(job).tag('daily_calculation_task')
         self.logger.info(f"Next daily calculation scheduled at: {schedule.next_run()}")
@@ -207,4 +212,4 @@ class AlphaCalculator:
             self.logger.info(f"[AlphaCalculator] init_date updated to {new_init_date}, triggering reprocessing.")
             self.init_date = new_init_date
             # Schedule the one-off job on the main event loop
-            asyncio.run_coroutine_threadsafe(self.run_calculation_job(calculation_date=new_init_date), asyncio.get_event_loop())
+            asyncio.run_coroutine_threadsafe(self.run_calculation_job(calculation_date=new_init_date), self.loop)
