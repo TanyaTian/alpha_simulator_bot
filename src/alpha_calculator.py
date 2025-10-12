@@ -188,7 +188,7 @@ class AlphaCalculator:
         i = 0
         while self._scheduler_running:
             schedule.run_pending()
-            if i % 300 == 0:
+            if i % 1000 == 0:
                 i = 0
                 next_run = schedule.next_run()
                 if next_run:
