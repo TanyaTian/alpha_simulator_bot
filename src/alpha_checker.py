@@ -103,14 +103,15 @@ class AlphaChecker:
             alpha_ids_to_check = [alpha['alpha_id'] for alpha in pending_alphas]
             self.logger.info(f"Found {len(alpha_ids_to_check)} alphas to check.")
 
-            semaphore = asyncio.Semaphore(10) # Limit to 10 concurrent requests
-
-            async def check_alpha_with_semaphore(alpha_id):
-                async with semaphore:
-                    return await self.check_alpha(self.session, alpha_id)
-
-            tasks = [check_alpha_with_semaphore(alpha_id) for alpha_id in alpha_ids_to_check]
-            results = await asyncio.gather(*tasks)
+            self.logger.info(f"Processing {len(alpha_ids_to_check)} alphas serially to avoid rate limiting.")
+            results = []
+            for i, alpha_id in enumerate(alpha_ids_to_check):
+                self.logger.info(f"Checking alpha {i+1}/{len(alpha_ids_to_check)}: {alpha_id}")
+                result = await self.check_alpha(self.session, alpha_id)
+                results.append(result)
+                if i < len(alpha_ids_to_check) - 1:
+                    self.logger.info(f"Finished checking {alpha_id}. Waiting 1 second before next check.")
+                    await asyncio.sleep(1)  # Wait for 1 second between each check
 
             successful_alphas = []
             for status, alpha_id, data in results:
