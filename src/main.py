@@ -89,6 +89,7 @@ async def main():
     try:
         logger.info("正在初始化 AlphaCalculator...")
         alpha_calculator = AlphaCalculator(
+            loop=loop,
             specified_sharpe=1.58,
             specified_fitness=1,
             corr_threshold=0.8,
@@ -103,7 +104,7 @@ async def main():
     # 4. 初始化并运行 AlphaChecker
     try:
         logger.info("正在初始化 AlphaChecker...")
-        alpha_checker = AlphaChecker(signal_manager=signal_manager)
+        alpha_checker = AlphaChecker(loop=loop, signal_manager=signal_manager)
         loop.run_in_executor(executor, alpha_checker.start)
         logger.info("AlphaChecker 调度器已在工作线程中启动。")
     except Exception as e:

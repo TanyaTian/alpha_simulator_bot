@@ -124,7 +124,8 @@ def save_stone_bag(dao, filtered_records, db_date_str, logger):
         logger.error(f"[AlphaProcessor] Error saving to stone_gold_bag_table: {e}")
 
 class AlphaCalculator:
-    def __init__(self, specified_sharpe: float, specified_fitness: float, corr_threshold: float, signal_manager: SignalManager = None):
+    def __init__(self, loop, specified_sharpe: float, specified_fitness: float, corr_threshold: float, signal_manager: SignalManager = None):
+        self.loop = loop
         self.logger = Logger()
         self.specified_sharpe = specified_sharpe
         self.specified_fitness = specified_fitness
@@ -135,11 +136,6 @@ class AlphaCalculator:
         self.pending_alpha_checks_dao = PendingAlphaChecksDAO()
         self._scheduler_running = False
         self.init_date = config_manager.get('init_date_str')
-        try:
-            self.loop = asyncio.get_running_loop()
-        except RuntimeError:
-            self.loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self.loop)
 
         config_manager.on_config_change(self.on_config_update)
         if signal_manager:
@@ -147,15 +143,13 @@ class AlphaCalculator:
         self.logger.info("[AlphaCalculator] Initialized with specified sharpe/fitness/corr_threshold.")
 
     async def run_calculation_job(self, calculation_date=None):
-        loop = asyncio.get_running_loop()
-        
         if calculation_date is None:
             calculation_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
         
         self.logger.info(f"Scheduling alpha processing for date: {calculation_date}")
 
         with ProcessPoolExecutor() as pool:
-            alpha_ids = await loop.run_in_executor(
+            alpha_ids = await self.loop.run_in_executor(
                 pool, 
                 process_alpha_candidates, 
                 calculation_date,

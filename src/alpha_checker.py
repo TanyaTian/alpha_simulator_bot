@@ -13,7 +13,8 @@ from dao import PendingAlphaChecksDAO, StoneGoldBagDAO
 from config_manager import config_manager
 
 class AlphaChecker:
-    def __init__(self, signal_manager: SignalManager = None):
+    def __init__(self, loop, signal_manager: SignalManager = None):
+        self.loop = loop
         self.logger = Logger()
         self._load_config()
         
@@ -140,7 +141,7 @@ class AlphaChecker:
         self._scheduler_running = True
 
         def job():
-            asyncio.run_coroutine_threadsafe(self.run_hourly_checks(), asyncio.get_event_loop())
+            asyncio.run_coroutine_threadsafe(self.run_hourly_checks(), self.loop)
 
         schedule.every().hour.at(":01").do(job).tag('hourly_check_task')
         self.logger.info(f"Next hourly check scheduled at: {schedule.next_run()}")
