@@ -88,13 +88,10 @@ async def main():
     # 3. 初始化并运行 AlphaCalculator
     try:
         logger.info("正在初始化 AlphaCalculator...")
-        specified_sharpe = config_manager.get('specified_sharpe', 0.8)
-        specified_fitness = config_manager.get('specified_fitness', 0.8)
-        corr_threshold = config_manager.get('corr_threshold', 0.8)
         alpha_calculator = AlphaCalculator(
-            specified_sharpe=specified_sharpe,
-            specified_fitness=specified_fitness,
-            corr_threshold=corr_threshold,
+            specified_sharpe=1.58,
+            specified_fitness=1,
+            corr_threshold=0.8,
             signal_manager=signal_manager
         )
         loop.run_in_executor(executor, alpha_calculator.start)
