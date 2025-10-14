@@ -5,6 +5,7 @@ import time
 import aiohttp
 import pandas as pd
 import schedule
+import datetime
 from datetime import datetime
 
 from logger import Logger
@@ -16,125 +17,148 @@ class AlphaChecker:
     def __init__(self, loop, signal_manager: SignalManager = None):
         self.loop = loop
         self.logger = Logger()
-        self._load_config()
-        
+
         self.pending_alpha_checks_dao = PendingAlphaChecksDAO()
         self.stone_gold_bag_dao = StoneGoldBagDAO()
-        
+
         self._scheduler_running = False
-        self.is_checking = False # A lock to prevent concurrent check runs
+        self.is_checking = False  # A lock to prevent concurrent check runs
+
+        # Get session from config_manager and register for updates
+        self.session = config_manager.get_session()
+        config_manager.on_config_change(self.handle_config_change)
 
         if signal_manager:
             signal_manager.add_handler(self.handle_exit_signal)
 
-    def _load_config(self):
-        self.session = config_manager.get_session() # Using the shared session from config_manager
-        if not self.session:
-            self.logger.error("[AlphaChecker] Failed to get aiohttp session from config_manager. The checker will not run.")
-        self.logger.info("[AlphaChecker] Config and session loaded.")
+    def handle_config_change(self, new_config):
+        """Callback to handle configuration changes."""
+        self.logger.info("Configuration updated, refreshing session for AlphaChecker...")
+        self.session = config_manager.get_session()
 
-    async def check_alpha(self, session: aiohttp.ClientSession, alpha_id: str, retries: int = 10):
-        """Asynchronously checks a single alpha ID with a retry mechanism."""
+    async def check_alpha(self, session: aiohttp.ClientSession, alpha_id: str):
+        """Asynchronously checks a single alpha ID, handling retries internally."""
         url = f"https://api.worldquantbrain.com/alphas/{alpha_id}/check"
-        self.logger.debug(f"Checking alpha: {alpha_id} (Retries left: {retries})")
-        try:
-            async with session.get(url) as response:
-                if "retry-after" in response.headers:
-                    if retries > 0:
+        self.logger.debug(f"Starting check for alpha: {alpha_id} at {url}")
+        
+        retry_count = 0
+        while True:
+            try:
+                async with session.get(url) as response:
+                    if "retry-after" in response.headers:
+                        retry_count += 1
+                        if retry_count >= 10:
+                            self.logger.error(f"Retry limit (10) reached for alpha {alpha_id}. Giving up.")
+                            return 'not_ready', alpha_id, None
+
                         wait_time = float(response.headers["Retry-After"])
-                        self.logger.warning(f"Rate limit hit for {alpha_id}, sleeping for {wait_time}s. Retrying...")
-                        await asyncio.sleep(wait_time)
-                        return await self.check_alpha(session, alpha_id, retries - 1) # Retry after waiting
-                    else:
-                        self.logger.error(f"Retry limit reached for alpha {alpha_id}. Keeping as pending.")
-                        return 'pending', alpha_id, None
+                        self.logger.warning(f"Rate limit for {alpha_id}. Sleeping for {wait_time}s as suggested by server before retrying.But have sleep 60s first.")
+                        await asyncio.sleep(60 + wait_time)  # Sleep a fixed 60 seconds instead of the suggested time
+                        continue # Retry the same alpha
 
-                response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
-                result_json = await response.json()
+                    response.raise_for_status()
+                    result_json = await response.json()
+                    self.logger.debug(f"JSON response for {alpha_id}: {result_json}")
 
-                if result_json.get("is", 0) == 0:
-                    self.logger.warning(f"Alpha {alpha_id} is not ready for check (is=0). Will retry later.")
-                    return 'pending', alpha_id, None # Keep status as pending
+                    if result_json.get("is", 0) == 0:
+                        self.logger.warning(f"Alpha {alpha_id} is not ready (is=0). Will re-queue for later.")
+                        return 'not_ready', alpha_id, None
 
-                checks_df = pd.DataFrame(result_json["is"]["checks"])
-                
-                if any(checks_df["result"] == "ERROR"):
-                    self.logger.error(f"Check returned an error for alpha {alpha_id}.")
-                    return 'failed', alpha_id, None
+                    checks_df = pd.DataFrame(result_json["is"]["checks"])
 
-                if any(checks_df["result"] == "FAIL"):
-                    self.logger.info(f"Alpha {alpha_id} failed checks.")
-                    return 'completed', alpha_id, None # Completed, but not a success
+                    if any(checks_df["result"] == "ERROR"):
+                        self.logger.error(f"Check returned an error for alpha {alpha_id}. Details: {checks_df.to_dict('records')}")
+                        return 'failed', alpha_id, None
 
-                # All checks passed, extract values
-                pc = checks_df[checks_df.name == "PROD_CORRELATION"]["value"].values[0]
-                sharpe = checks_df[checks_df.name == "LOW_SHARPE"]["value"].values[0]
-                fitness = checks_df[checks_df.name == "LOW_FITNESS"]["value"].values[0]
-                
-                self.logger.info(f"Alpha {alpha_id} passed all checks.")
-                return 'completed', alpha_id, (pc, sharpe, fitness)
+                    failed_checks = checks_df[checks_df["result"] == "FAIL"]
+                    if not failed_checks.empty:
+                        self.logger.info(f"Alpha {alpha_id} failed checks.")
+                        self.logger.info(f"Fail reasons:\n{failed_checks.to_string(index=False)}")
+                        return 'completed', alpha_id, None
 
-        except aiohttp.ClientError as e:
-            self.logger.error(f"HTTP error checking alpha {alpha_id}: {e}")
-            return 'pending', alpha_id, None # Network error, keep as pending to retry
-        except Exception as e:
-            self.logger.error(f"Error processing check for alpha {alpha_id}: {e}", exc_info=True)
-            return 'failed', alpha_id, None # Mark as failed if there's a parsing error
+                    pc = checks_df[checks_df.name == "PROD_CORRELATION"]["value"].values[0]
+                    sharpe = checks_df[checks_df.name == "LOW_SHARPE"]["value"].values[0]
+                    fitness = checks_df[checks_df.name == "LOW_FITNESS"]["value"].values[0]
+
+                    self.logger.info(f"Alpha {alpha_id} passed all checks.")
+                    return 'completed', alpha_id, (pc, sharpe, fitness)
+
+            except aiohttp.ClientError as e:
+                self.logger.error(f"HTTP error for {alpha_id}: {e}. Re-queuing for a later attempt.")
+                return 'not_ready', alpha_id, None # Treat as not ready, re-queue
+            except Exception as e:
+                self.logger.error(f"Unexpected error processing {alpha_id}: {e}", exc_info=True)
+                return 'failed', alpha_id, None
 
     async def run_hourly_checks(self):
-        """The main async method to fetch and check alphas."""
+        """The main async method to fetch and check alphas using a queue-based approach."""
         if self.is_checking:
             self.logger.info("Check is already in progress. Skipping this run.")
             return
 
-        self.session = config_manager.get_session() # Refresh session each run
-        if not self.session:
-            self.logger.error("No aiohttp session available. Skipping hourly check.")
+        self.session = config_manager.get_session()
+        if not self.session or not self.session.cookies:
+            self.logger.error("Session or cookies not found. Skipping check run.")
             return
-        
+
         self.is_checking = True
-        self.logger.info("Starting hourly alpha checks...")
+        self.logger.info("Starting alpha check run...")
+
         try:
             pending_alphas = self.pending_alpha_checks_dao.get_pending_checks(limit=500)
             if not pending_alphas:
-                self.logger.info("No pending alphas to check. Sleeping for 1 hour.")
+                self.logger.info("No pending alphas to check.")
                 return
 
-            alpha_ids_to_check = [alpha['alpha_id'] for alpha in pending_alphas]
-            self.logger.info(f"Found {len(alpha_ids_to_check)} alphas to check.")
+            alpha_queue = [alpha['alpha_id'] for alpha in pending_alphas]
+            total_initial_alphas = len(alpha_queue)
+            processed_count = 0
+            self.logger.info(f"Found {total_initial_alphas} alphas to check.")
 
-            self.logger.info(f"Processing {len(alpha_ids_to_check)} alphas serially to avoid rate limiting.")
-            results = []
-            for i, alpha_id in enumerate(alpha_ids_to_check):
-                self.logger.info(f"Checking alpha {i+1}/{len(alpha_ids_to_check)}: {alpha_id}")
-                result = await self.check_alpha(self.session, alpha_id)
-                results.append(result)
-                if i < len(alpha_ids_to_check) - 1:
-                    self.logger.info(f"Finished checking {alpha_id}. Waiting 1 second before next check.")
-                    await asyncio.sleep(1)  # Wait for 1 second between each check
+            async with aiohttp.ClientSession(cookies=self.session.cookies) as session:
+                while alpha_queue:
+                    alpha_id = alpha_queue.pop(0)
+                    processed_count += 1
+                    
+                    self.logger.info(f"--- [{processed_count}/{total_initial_alphas}] Checking alpha: {alpha_id} ---")
+                    
+                    status, _, data = await self.check_alpha(session, alpha_id)
 
-            successful_alphas = []
-            for status, alpha_id, data in results:
-                if status != 'pending': # Update status unless it needs to be retried without a status change
-                    self.pending_alpha_checks_dao.update_check_status(alpha_id, status)
-                
-                if status == 'completed' and data is not None:
-                    pc, sharpe, fitness = data
-                    successful_alphas.append({
-                        'id': alpha_id,
-                        'gold': 'gold',
-                        'prodCorrelation': pc,
-                        'sharpe': sharpe,
-                        'fitness': fitness
-                    })
-            
-            if successful_alphas:
-                self.logger.info(f"Saving {len(successful_alphas)} successful alphas to stone_gold_bag.")
-                self.stone_gold_bag_dao.batch_insert(successful_alphas)
+                    if status == 'not_ready':
+                        self.logger.warning(f"Alpha {alpha_id} is not ready, re-queuing to the end.")
+                        alpha_queue.append(alpha_id)
+                        # Optional: sleep to prevent a fast loop if many are not ready
+                        await asyncio.sleep(60)
 
+                    elif status == 'failed':
+                        self.logger.error(f"Alpha {alpha_id} failed processing, marking as 'failed'.")
+                        self.pending_alpha_checks_dao.update_check_status(alpha_id, 'failed')
+
+                    elif status == 'completed':
+                        self.logger.info(f"Alpha {alpha_id} check completed.")
+                        self.pending_alpha_checks_dao.update_check_status(alpha_id, 'completed')
+                        
+                        if data is not None:
+                            pc, sharpe, fitness = data
+                            update_data = {
+                                'gold': 'gold',
+                                'prodCorrelation': pc,
+                                'sharpe': sharpe,
+                                'fitness': fitness
+                            }
+                            self.logger.info(f"Updating successful alpha {alpha_id} in stone_gold_bag.")
+                            self.stone_gold_bag_dao.update_by_id(alpha_id, update_data)
+                    
+                    # Add a polite wait between checking different alphas
+                    if alpha_queue:
+                        self.logger.info(f"Finished check for {alpha_id}. Waiting 5 seconds before next alpha.")
+                        await asyncio.sleep(5)
+
+        except Exception as e:
+            self.logger.error(f"An unexpected error occurred during alpha checks: {e}", exc_info=True)
         finally:
             self.is_checking = False
-            self.logger.info("Hourly alpha checks finished.")
+            self.logger.info("Alpha check run finished.")
 
     def start(self):
         """Starts the scheduler in a blocking loop. To be run in a separate thread."""
@@ -144,7 +168,7 @@ class AlphaChecker:
         def job():
             asyncio.run_coroutine_threadsafe(self.run_hourly_checks(), self.loop)
 
-        schedule.every().hour.at(":01").do(job).tag('hourly_check_task')
+        schedule.every(1).hour.do(job).tag('hourly_check_task')
         self.logger.info(f"Next hourly check scheduled at: {schedule.next_run()}")
 
         while self._scheduler_running:
