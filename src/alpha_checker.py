@@ -40,7 +40,7 @@ class AlphaChecker:
         """Asynchronously checks a single alpha ID, handling retries internally."""
         url = f"https://api.worldquantbrain.com/alphas/{alpha_id}/check"
         self.logger.debug(f"Starting check for alpha: {alpha_id} at {url}")
-        
+
         retry_count = 0
         while True:
             try:
@@ -52,22 +52,25 @@ class AlphaChecker:
                             return 'not_ready', alpha_id, None
 
                         wait_time = float(response.headers["Retry-After"])
-                        self.logger.warning(f"Rate limit for {alpha_id}. Sleeping for {wait_time}s as suggested by server before retrying.But have sleep 60s first.")
-                        await asyncio.sleep(60 + wait_time)  # Sleep a fixed 60 seconds instead of the suggested time
-                        continue # Retry the same alpha
+                        self.logger.warning(
+                            f"Rate limit for {alpha_id}. Sleeping for {wait_time}s as suggested by server before retrying.But have sleep 60s first.")
+                        await asyncio.sleep(
+                            60 + wait_time)  # Sleep a fixed 60 seconds instead of the suggested time
+                        continue  # Retry the same alpha
 
                     response.raise_for_status()
                     result_json = await response.json()
                     self.logger.debug(f"JSON response for {alpha_id}: {result_json}")
 
                     if result_json.get("is", 0) == 0:
-                        self.logger.warning(f"Alpha {alpha_id} is not ready (is=0). Will re-queue for later.")
+                        self.logger.warning(f"Alpha {alpha_id} is not ready (is=0).")
                         return 'not_ready', alpha_id, None
 
                     checks_df = pd.DataFrame(result_json["is"]["checks"])
 
                     if any(checks_df["result"] == "ERROR"):
-                        self.logger.error(f"Check returned an error for alpha {alpha_id}. Details: {checks_df.to_dict('records')}")
+                        self.logger.error(
+                            f"Check returned an error for alpha {alpha_id}. Details: {checks_df.to_dict('records')}")
                         return 'failed', alpha_id, None
 
                     failed_checks = checks_df[checks_df["result"] == "FAIL"]
@@ -83,9 +86,16 @@ class AlphaChecker:
                     self.logger.info(f"Alpha {alpha_id} passed all checks.")
                     return 'completed', alpha_id, (pc, sharpe, fitness)
 
+            except aiohttp.ClientResponseError as e:
+                if e.status == 401:
+                    self.logger.warning(
+                        f"Authentication error (401) for alpha {alpha_id}. A session refresh will be attempted.")
+                    return 'auth_error', alpha_id, None
+                self.logger.error(f"HTTP error for {alpha_id}: {e}. It will be re-checked in the next run.")
+                return 'not_ready', alpha_id, None
             except aiohttp.ClientError as e:
-                self.logger.error(f"HTTP error for {alpha_id}: {e}. Re-queuing for a later attempt.")
-                return 'not_ready', alpha_id, None # Treat as not ready, re-queue
+                self.logger.error(f"Client error for {alpha_id}: {e}. It will be re-checked in the next run.")
+                return 'not_ready', alpha_id, None
             except Exception as e:
                 self.logger.error(f"Unexpected error processing {alpha_id}: {e}", exc_info=True)
                 return 'failed', alpha_id, None
@@ -104,6 +114,7 @@ class AlphaChecker:
         self.is_checking = True
         self.logger.info("Starting alpha check run...")
 
+        client_session = None
         try:
             pending_alphas = self.pending_alpha_checks_dao.get_pending_checks(limit=500)
             if not pending_alphas:
@@ -115,48 +126,68 @@ class AlphaChecker:
             processed_count = 0
             self.logger.info(f"Found {total_initial_alphas} alphas to check.")
 
-            async with aiohttp.ClientSession(cookies=self.session.cookies) as session:
-                while alpha_queue:
-                    alpha_id = alpha_queue.pop(0)
-                    processed_count += 1
-                    
-                    self.logger.info(f"--- [{processed_count}/{total_initial_alphas}] Checking alpha: {alpha_id} ---")
-                    
-                    status, _, data = await self.check_alpha(session, alpha_id)
+            client_session = aiohttp.ClientSession(cookies=self.session.cookies)
+            while alpha_queue:
+                alpha_id = alpha_queue.pop(0)
+                processed_count += 1
 
-                    if status == 'not_ready':
-                        self.logger.warning(f"Alpha {alpha_id} is not ready, re-queuing to the end.")
-                        alpha_queue.append(alpha_id)
-                        # Optional: sleep to prevent a fast loop if many are not ready
-                        await asyncio.sleep(60)
+                self.logger.info(f"--- [{processed_count}/{total_initial_alphas}] Checking alpha: {alpha_id} ---")
 
-                    elif status == 'failed':
-                        self.logger.error(f"Alpha {alpha_id} failed processing, marking as 'failed'.")
-                        self.pending_alpha_checks_dao.update_check_status(alpha_id, 'failed')
+                status, _, data = await self.check_alpha(client_session, alpha_id)
 
-                    elif status == 'completed':
-                        self.logger.info(f"Alpha {alpha_id} check completed.")
-                        self.pending_alpha_checks_dao.update_check_status(alpha_id, 'completed')
-                        
-                        if data is not None:
-                            pc, sharpe, fitness = data
-                            update_data = {
-                                'gold': 'gold',
-                                'prodCorrelation': pc,
-                                'sharpe': sharpe,
-                                'fitness': fitness
-                            }
-                            self.logger.info(f"Updating successful alpha {alpha_id} in stone_gold_bag.")
-                            self.stone_gold_bag_dao.update_by_id(alpha_id, update_data)
-                    
-                    # Add a polite wait between checking different alphas
-                    if alpha_queue:
-                        self.logger.info(f"Finished check for {alpha_id}. Waiting 5 seconds before next alpha.")
-                        await asyncio.sleep(5)
+                if status == 'auth_error':
+                    self.logger.warning("Authentication error. Refreshing session and retrying alpha.")
+                    await client_session.close()
+
+                    self.session = config_manager.get_session()  # Re-login/get new session
+                    if not self.session or not self.session.cookies:
+                        self.logger.error("Failed to get a new session. Aborting check run.")
+                        alpha_queue.insert(0, alpha_id)  # put it back
+                        break  # exit while
+
+                    client_session = aiohttp.ClientSession(cookies=self.session.cookies)
+
+                    # Re-add alpha to the front of the queue and continue
+                    alpha_queue.insert(0, alpha_id)
+                    processed_count -= 1
+                    continue
+
+                elif status == 'not_ready':
+                    self.logger.warning(
+                        f"Alpha {alpha_id} is not ready. It will be checked in the next scheduled run.")
+                    # No re-queueing, just continue to the next alpha after a short wait
+                    await asyncio.sleep(30)
+
+
+                elif status == 'failed':
+                    self.logger.error(f"Alpha {alpha_id} failed processing, marking as 'failed'.")
+                    self.pending_alpha_checks_dao.update_check_status(alpha_id, 'failed')
+
+                elif status == 'completed':
+                    self.logger.info(f"Alpha {alpha_id} check completed.")
+                    self.pending_alpha_checks_dao.update_check_status(alpha_id, 'completed')
+
+                    if data is not None:
+                        pc, sharpe, fitness = data
+                        update_data = {
+                            'gold': 'gold',
+                            'prodCorrelation': pc,
+                            'sharpe': sharpe,
+                            'fitness': fitness
+                        }
+                        self.logger.info(f"Updating successful alpha {alpha_id} in stone_gold_bag.")
+                        self.stone_gold_bag_dao.update_by_id(alpha_id, update_data)
+
+                # Add a polite wait between checking different alphas
+                if alpha_queue:
+                    self.logger.info(f"Finished check for {alpha_id}. Waiting 5 seconds before next alpha.")
+                    await asyncio.sleep(5)
 
         except Exception as e:
             self.logger.error(f"An unexpected error occurred during alpha checks: {e}", exc_info=True)
         finally:
+            if client_session and not client_session.closed:
+                await client_session.close()
             self.is_checking = False
             self.logger.info("Alpha check run finished.")
 
