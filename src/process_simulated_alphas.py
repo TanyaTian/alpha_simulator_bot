@@ -1,81 +1,51 @@
-print(">>> [TRACE] Entering process_simulated_alphas module top")
+import time
+import pandas as pd
+import requests
+import urllib3
+import schedule
+import threading
+import os
+import csv
+from datetime import datetime, timedelta
+import ast
+from typing import List
+from alpha_prune import calculate_correlations, generate_comparison_data
+from logger import Logger
+from signal_manager import SignalManager
+from io import StringIO
+from dao import SimulatedAlphasDAO  
+from dao import StoneGoldBagDAO
+from config_manager import config_manager
 
-# ===== Import tracing =====
-print(">>> importing time"); import time
-print(">>> importing pandas"); import pandas as pd
-print(">>> importing requests"); import requests
-print(">>> importing urllib3"); import urllib3
-print(">>> importing schedule"); import schedule
-print(">>> importing threading"); import threading
-print(">>> importing os"); import os
-print(">>> importing csv"); import csv
-print(">>> importing datetime"); from datetime import datetime, timedelta
-print(">>> importing ast"); import ast
-print(">>> importing typing"); from typing import List
-print(">>> importing alpha_prune"); from alpha_prune import calculate_correlations, generate_comparison_data
-print(">>> importing logger"); from logger import Logger
-print(">>> importing signal_manager"); from signal_manager import SignalManager
-print(">>> importing io"); from io import StringIO
-print(">>> importing dao"); from dao import SimulatedAlphasDAO  
-print(">>> importing dao.StoneGoldBagDAO"); from dao import StoneGoldBagDAO
-print(">>> importing config_manager"); from config_manager import config_manager
-
-print(">>> [TRACE] Finished all imports, before class definition")
-
-# ====== Class definition tracing ======
-print(">>> [TRACE] About to define class ProcessSimulatedAlphas")
 
 class ProcessSimulatedAlphas:
     def __init__(self, output_dir, specified_sharpe, specified_fitness, signal_manager=None):
-        print(">>> Entering ProcessSimulatedAlphas.__init__")
         self.output_dir = output_dir
         self.SPECIFIED_SHARPE = specified_sharpe
         self.SPECIFIED_FITNESS = specified_fitness
         self.logger = Logger()
-        self.logger.info("[PSA_INIT] Logger initialized.")
 
         self.alpha_ids: List[str] = []
         self.total = 0
         self.idx = 0
         self.date_str = self.get_yesterday_date()
-        self.logger.info("[PSA_INIT] Basic attributes initialized.")
 
-        self.logger.info("[PSA_INIT] Calling _load_config_from_manager...")
         self._load_config_from_manager()
-        self.logger.info("[PSA_INIT] _load_config_from_manager finished.")
 
         self._scheduler_running = False
-        self.logger.info("[PSA_INIT] Scheduler flags initialized.")
-
-        self.logger.info("[PSA_INIT] Initializing SimulatedAlphasDAO...")
         self.simulated_alphas_dao = SimulatedAlphasDAO()
-        self.logger.info("[PSA_INIT] SimulatedAlphasDAO initialized.")
 
-        self.logger.info("[PSA_INIT] Initializing StoneGoldBagDAO...")
         self.stone_gold_bag_dao = StoneGoldBagDAO()
-        self.logger.info("[PSA_INIT] StoneGoldBagDAO initialized.")
-
-        self.logger.info("[PSA_INIT] Initializing config lock...")
-        self.config_lock = threading.Lock()
-        self.logger.info("[PSA_INIT] Config lock initialized.")
 
         # 注册配置更新回调
-        self.logger.info("[PSA_INIT] Registering config update observer...")
         config_manager.on_config_change(self.on_config_update)
-        self.logger.info("Registered config update observer")
-        self.logger.info("[PSA_INIT] Config update observer registered.")
 
         # 注册信号处理
-        self.logger.info("[PSA_INIT] Registering signal handler...")
         if signal_manager:
             signal_manager.add_handler(self.handle_exit_signal)
-            self.logger.info("[PSA_INIT] Signal handler registered.")
         else:
             self.logger.warning("未提供 SignalManager,ProcessSimulatedAlphas 无法注册信号处理函数")
         
-        self.logger.info("[PSA_INIT] __init__ method finished.")
-        print(">>> [TRACE] Finished defining class ProcessSimulatedAlphas")
-
     def handle_exit_signal(self, signum, frame):
         self.logger.info(f"Received shutdown signal {signum}, saving unfinished alpha IDs...")
         self.save_unfinished_alpha_ids()
@@ -513,90 +483,18 @@ class ProcessSimulatedAlphas:
         当配置文件更新时，检查init_date是否被更新
         如果更新，则使用新的init_date值调用process_daily_alpha_ids方法
         """
-        with self.config_lock:  # 确保线程安全
-            new_init_date = new_config.get('init_date_str')
-            if new_init_date and new_init_date != self.init_date:
-                self.logger.info(f"init_date updated from {self.init_date} to {new_init_date}, triggering reprocessing")
-                
-                # 更新当前实例的init_date
-                self.init_date = new_init_date
-                
-                # 在新线程中调用处理函数避免阻塞
-                threading.Thread(
-                    target=self.process_daily_alpha_ids,
-                    args=(new_init_date,),
-                    daemon=True
-                ).start()
-            else:
-                self.logger.info("init_date not updated or same as before")
-
-print(">>> [TRACE] Finished defining class ProcessSimulatedAlphas (end of class body)")
-
-if __name__ == "__main__":
-    print(">>> [TRACE] Entering __main__ block of process_simulated_alphas")
-    psa = ProcessSimulatedAlphas("./output", 1.5, 1.0)
-    print(">>> [TRACE] Instance created successfully.")
-  
-
-"""
-data_dir = "./data"
-output_dir = "./output"
-specified_sharpe = 1.58
-specified_fitness = 1.0
-stone_bag_file = os.path.join(output_dir, 'stone_bag.csv.2025-05-25')
-logger = Logger()
+        new_init_date = new_config.get('init_date_str')
+        if new_init_date and new_init_date != self.init_date:
+            self.logger.info(f"init_date updated from {self.init_date} to {new_init_date}, triggering reprocessing")
             
-# 3. 读取stone_bag文件并排序
-alpha_result = []
-if os.path.exists(stone_bag_file):
-    with open(stone_bag_file, 'r', encoding='utf-8') as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            try:
-                is_data = ast.literal_eval(row['is'].strip().strip('"\''))
-                alpha_result.append({
-                    'id': row['id'],
-                    'settings': ast.literal_eval(row['settings']),
-                    'is': is_data
-                })
-            except Exception as e:
-                logger.warning(f"Failed to parse alpha {row.get('id')}: {e}")
-                continue
-    
-    # 按fitness值从小到大排序
-    alpha_result.sort(key=lambda x: x['is'].get('fitness', 0))
-    logger.info(f"Loaded and sorted {len(alpha_result)} alphas from stone_bag file by fitness")
-    if len(alpha_result) > 0:
-        logger.info("First 3 alphas by fitness:")
-        for alpha in alpha_result[:3]:
-            logger.info(f"ID: {alpha['id']}, fitness: {alpha['is'].get('fitness', 0)}")
-        
-        logger.info("Last 3 alphas by fitness:") 
-        for alpha in alpha_result[-3:]:
-            logger.info(f"ID: {alpha['id']}, fitness: {alpha['is'].get('fitness', 0)}")
-
-
-# 4. 调用alpha_prune.py方法
-if alpha_result:
-    try:
-        os_alpha_ids, os_alpha_rets = generate_comparison_data(
-            alpha_result, 
-            username, 
-            password
-        )
-
-        filtered_alphas = calculate_correlations(
-            os_alpha_ids,
-            os_alpha_rets,
-            username,
-            password,
-            corr_threshold=0.7
-        )
-        logger.info(f"Filtered alphas by correlation: {sum(len(v) for v in filtered_alphas.values())} alphas remaining")
-        
-        # 5. 追加到alpha_ids
-        for region, alpha_ids in filtered_alphas.items():
-            logger.info(f"region:{region}, alpha_ids:{len(alpha_ids)}")
-    except Exception as e:
-        logger.error(f"Failed to filter alphas by correlation: {e}")
-"""
+            # 更新当前实例的init_date
+            self.init_date = new_init_date
+            
+            # 在新线程中调用处理函数避免阻塞
+            threading.Thread(
+                target=self.process_daily_alpha_ids,
+                args=(new_init_date,),
+                daemon=True
+            ).start()
+        else:
+            self.logger.info("init_date not updated or same as before")

@@ -561,7 +561,7 @@ def main():
     """
     主函数,用于从命令行调用生成优化alpha并插入数据库
     """
-    dates = ['20251003']  # 示例日期列表
+    dates = ['20251015']  # 示例日期列表
     # 设置日志
     logger = Logger()
     logger.info("Starting Alpha Signal Factory")

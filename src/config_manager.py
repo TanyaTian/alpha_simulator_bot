@@ -1,4 +1,3 @@
-from flask import Flask, request, jsonify
 import threading
 import os
 from utils import load_config  # 导入配置加载工具
@@ -135,53 +134,3 @@ class ConfigManager:
 # 创建单例实例
 config_manager = ConfigManager()
 
-app = Flask(__name__)
-
-@app.route('/config', methods=['GET'])
-def get_config():
-    """获取当前内存中的配置"""
-    config_manager.logger.debug("GET /config endpoint accessed")
-    result = jsonify(config_manager.get_all())
-    config_manager.logger.debug(f"Returning config: {result.json}")
-    return result
-
-@app.route('/config/update', methods=['POST'])
-def update_config():
-    """更新配置并通知观察者"""
-    config_manager.logger.info("POST /config/update endpoint accessed")
-    data = request.json
-    if not data:
-        config_manager.logger.warning("No JSON data provided in request")
-        return jsonify({'status': 'error', 'message': 'No JSON data provided'}), 400
-
-    config_manager.logger.debug(f"Received config update data: {data}")
-    updated_keys = []
-    for key, value in data.items():
-        config_manager.logger.debug(f"Processing update for key: {key}")
-        config_manager.set(key, value)
-        updated_keys.append(key)
-    
-    config_manager.logger.info(f"Config updated with keys: {updated_keys}")
-    config_manager.notify_observers()
-    config_manager.logger.debug("Observers notified of config change")
-    
-    return jsonify({
-        'status': 'success',
-        'updated': updated_keys,
-        'current_config': config_manager.get_all()
-    })
-
-def run_config_server(port=5001):
-    """启动配置服务"""
-    app.run(host='0.0.0.0', port=port)
-
-if __name__ == '__main__':
-    run_config_server()
-
-# Example curl commands for testing:
-# 1. Get current config:
-#    curl -X GET http://localhost:5001/config
-#
-# 2. Update config (example updating 'timeout' value):
-#    curl -X POST http://localhost:5001/config/update -H "Content-Type: application/json" -d '{"max_concurrent": 8}'
-# curl -X POST http://localhost:5001/config/update -H "Content-Type: application/json" -d '{"region_set": ["USA", "USA", "GLB"]}'

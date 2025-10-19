@@ -13,7 +13,8 @@ from logger import Logger
 from signal_manager import SignalManager
 from alpha_filter import AlphaFilter
 from alpha_poller import AlphaPoller
-from config_manager import config_manager, run_config_server
+from config_manager import config_manager
+from api.server import run_server
 from alpha_calculator import AlphaCalculator
 from alpha_checker import AlphaChecker
 
@@ -28,13 +29,13 @@ async def main():
     """
     logger.debug("异步main函数开始执行")
 
-    # 使用run_in_executor在独立的线程中运行Flask配置服务器，避免阻塞事件循环
+    # 使用run_in_executor在独立的线程中运行Flask API服务器，避免阻塞事件循环
     loop = asyncio.get_running_loop()
-    config_server_thread = loop.run_in_executor(
+    api_server_thread = loop.run_in_executor(
         None,  # 使用默认的ThreadPoolExecutor
-        lambda: run_config_server(port=5001)
+        lambda: run_server(port=5001)
     )
-    logger.info("配置中心服务已在后台线程启动，地址 http://localhost:5001")
+    logger.info("API 服务已在后台线程启动，地址 http://localhost:5001")
 
     # 等待一小段时间，确保配置服务已加载初始配置
     await asyncio.sleep(2)

@@ -3,9 +3,11 @@ import os
 import csv
 import pandas as pd
 import ast
+import re
 from datetime import datetime
 from pytz import timezone
 from logger import Logger  # 导入 Logger 类
+
 
 # 创建全局 Logger 实例
 logger = Logger()
@@ -278,3 +280,55 @@ def get_alphas_from_data(data_rows, min_sharpe, min_fitness, mode="track", regio
             continue
             
     return output
+  
+'''
+This module provides a function to parse data fields from a WorldQuant BRAIN alpha expression.
+'''
+
+def extract_datafields(alpha_expression: str, filter_list: list = None) -> list:
+    """
+    Parses an alpha expression to extract data fields, excluding specified operators and filters.
+
+    Args:
+        alpha_expression: The alpha expression string (e.g., "rank(close) - rank(open)").
+        filter_list: A list of data fields to exclude from the result.
+
+    Returns:
+        A list of unique data fields found in the expression.
+    """
+    if filter_list is None:
+        filter_list = []
+
+    # Complete list of operators from the WorldQuant BRAIN platform
+    operators = {
+        "add", "multiply", "sign", "subtract", "pasteurize", "log", "purify", "arc_tan", "max", "to_nan", "abs",
+        "round_down", "divide", "min", "nan_mask", "signed_power", "inverse", "round", "sqrt", "reverse", "power",
+        "densify", "or", "and", "not", "is_not_finite", "is_nan", "less", "equal", "greater", "if_else",
+        "not_equal", "less_equal", "greater_equal", "ts_corr", "ts_zscore", "ts_returns", "ts_product",
+        "ts_std_dev", "ts_triple_corr", "ts_backfill", "days_from_last_change", "last_diff_value", "ts_scale",
+        "ts_vector_neut", "ts_step", "ts_sum", "ts_av_diff", "ts_rank_gmean_amean_diff", "ts_kurtosis",
+        "ts_mean", "ts_arg_max", "ts_max", "ts_rank", "ts_ir", "ts_delay", "ts_quantile", "ts_min",
+        "ts_count_nans", "ts_covariance", "ts_co_skewness", "ts_decay_linear", "jump_decay", "ts_arg_min",
+        "ts_regression", "ts_max_diff", "kth_element", "hump", "ts_delta", "ts_vector_proj",
+        "ts_target_tvr_decay", "ts_target_tvr_delta_limit", "ts_target_tvr_hump", "winsorize", "rank",
+        "vector_neut", "zscore", "scale_down", "scale", "normalize", "quantile", "vec_norm", "vec_min",
+        "vec_sum", "vec_max", "vec_avg", "vec_stddev", "bucket", "tail", "filter", "clamp", "keep",
+        "trade_when", "generate_stats", "group_min", "group_mean", "group_max", "group_vector_neut",
+        "group_rank", "group_backfill", "group_scale", "group_count", "group_zscore", "group_std_dev",
+        "group_sum", "group_neutralize", "group_cartesian_product", "combo_a", "self_corr", "in",
+        "universe_size", "reduce_ir", "reduce_avg", "reduce_powersum", "reduce_max", "reduce_min",
+        "reduce_norm", "reduce_sum", "reduce_range", "reduce_percentage", "reduce_skewness", "reduce_count",
+        "reduce_kurtosis", "reduce_choose", "reduce_stddev"
+    }
+
+    # Find all word-like tokens in the expression that could be variables or function names
+    potential_fields = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]*', alpha_expression)
+
+    # Filter out operators, numeric values, and items in the user-provided filter_list
+    datafields = set()
+    for field in potential_fields:
+        if field not in operators and not field.isnumeric() and field not in filter_list:
+            datafields.add(field)
+
+    return list(datafields)
+

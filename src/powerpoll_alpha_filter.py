@@ -208,7 +208,7 @@ def main():
     logger = Logger()
     logger.info("Starting PowerPoll Alpha Filter")
 
-    datetimes = ['20251004']  # 示例日期列表
+    datetimes = ['20251015']  # 示例日期列表
     
     try:
         # 初始化并运行

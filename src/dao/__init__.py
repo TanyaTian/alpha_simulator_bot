@@ -5,3 +5,4 @@ from .simulation_tasks_dao import SimulationTasksDAO
 from .alpha_signal_dao import AlphaSignalDAO
 from .stone_gold_bag_dao import StoneGoldBagDAO
 from .pending_alpha_checks_dao import PendingAlphaChecksDAO
+from .data_exploration_dao import DataExplorationDAO
