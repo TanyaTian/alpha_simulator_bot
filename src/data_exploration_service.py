@@ -15,7 +15,7 @@ class DataExplorationService:
         self.simulated_alphas_dao = SimulatedAlphasDAO()
         self.data_exploration_dao = DataExplorationDAO()
 
-    def _extract_category_from_is(self, is_str: str) -> str | None:
+    def _extract_category_from_is(self, is_str: str) -> str:
         try:
             is_data = ast.literal_eval(is_str)
             checks = is_data.get('checks', [])
@@ -30,7 +30,7 @@ class DataExplorationService:
             return None
         return None
 
-    def _transform_alpha_record(self, alpha: dict) -> dict | None:
+    def _transform_alpha_record(self, alpha: dict) -> dict:
         try:
             settings = ast.literal_eval(alpha['settings'])
             regular = ast.literal_eval(alpha['regular'])
