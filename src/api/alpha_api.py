@@ -28,7 +28,7 @@ def process_data_exploration_trigger():
     logger.info(f"Received data exploration process request for datetime: {datetime}, force_process: {force_process}") # 日志：记录收到的请求
     if not datetime:
         logger.error("Missing 'datetime' parameter.") # 日志：记录错误
-        return jsonify({"status": "error", "message": "缺少 'datetime' 参数。"}), 400
+        return jsonify({"status": "error", "message": "Missing 'datetime' parameter."}), 400
     
     result = data_exploration_service.process_simulated_alphas_for_day(datetime, force_process)
     logger.info(f"Data exploration process finished with result: {result}") # 日志：记录处理结果
@@ -50,7 +50,7 @@ def query_data_exploration():
 
     if not all([region, universe, delay, datafield]):
         logger.error("Missing query parameters.") # 日志：记录错误
-        return jsonify({"status": "error", "message": "缺少查询参数。"}), 400
+        return jsonify({"status": "error", "message": "Missing query parameters."}), 400
     
     data_exploration_dao = DataExplorationDAO()
     results = data_exploration_dao.query_by_filters(region, universe, delay, datafield)

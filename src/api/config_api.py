@@ -1,12 +1,12 @@
 from flask import Blueprint, request, jsonify
-from config_manager import config_manager  # 导入单例
+from config_manager import config_manager  # Import the singleton instance
 
-# 创建配置蓝图
+# Create a blueprint for configuration management.
 config_bp = Blueprint('config_api', __name__, url_prefix='/config')
 
 @config_bp.route('', methods=['GET'])
 def get_config():
-    """获取当前内存中的配置
+    """Get the current configuration from memory.
 
     curl -X GET http://localhost:5001/config
     """
@@ -17,7 +17,7 @@ def get_config():
 
 @config_bp.route('/update', methods=['POST'])
 def update_config():
-    """更新配置并通知观察者
+    """Update the configuration and notify observers.
 
     curl -X POST http://localhost:5001/config/update -H "Content-Type: application/json" -d '{"max_concurrent": 8}'
     """
