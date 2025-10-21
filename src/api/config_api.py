@@ -20,6 +20,7 @@ def update_config():
     """Update the configuration and notify observers.
 
     curl -X POST http://localhost:5001/config/update -H "Content-Type: application/json" -d '{"max_concurrent": 8}'
+    curl -X POST http://localhost:5001/config/update -H "Content-Type: application/json" -d '{"region_set": ["USA"]}'
     """
     config_manager.logger.info("POST /config/update endpoint accessed")
     data = request.json

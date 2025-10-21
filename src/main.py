@@ -54,35 +54,7 @@ async def main():
     executor = ThreadPoolExecutor(max_workers=6, thread_name_prefix='SyncWorker')
 
     # --- 在独立的线程中运行同步阻塞的组件 ---
-    # 1. 初始化并运行ProcessSimulatedAlphas (已停用)
-    """
-    logger.info("正在初始化 ProcessSimulatedAlphas...")
-
-    # 从配置中心获取 output_dir，这是更稳健的做法
-    # 构建基础路径
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    project_root = os.path.dirname(script_dir)
-    output_dir = os.path.join(project_root, 'output')
-    if not output_dir:
-        logger.error("'output_dir' not found. Please define it.")
-        return
-
-    logger.info(f"Found output directory: {output_dir}")
     
-
-    processor = ProcessSimulatedAlphas(
-        output_dir=output_dir,
-        min_sharpe=1.58, 
-        min_fitness=1.0, 
-        signal_manager=signal_manager
-    )
-    logger.info("ProcessSimulatedAlphas 初始化完成。")
-    # 启动调度器和处理循环在不同的线程中
-    loop.run_in_executor(executor, processor.run_scheduler)
-    logger.info("ProcessSimulatedAlphas 调度器已在工作线程中启动。")
-    loop.run_in_executor(executor, processor.run_processing_loop)
-    logger.info("ProcessSimulatedAlphas 处理循环已在工作线程中启动。")
-    """
 
     # --- 启动新的重构模块 ---
 
