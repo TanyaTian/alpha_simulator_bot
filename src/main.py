@@ -17,6 +17,7 @@ from config_manager import config_manager
 from api.server import run_server
 from alpha_calculator import AlphaCalculator
 from alpha_checker import AlphaChecker
+from sa_simulator import SASimulator
 
 # 创建全局Logger实例
 logger = Logger()
@@ -87,7 +88,6 @@ async def main():
     # 5. 初始化并运行 Super Alpha 模拟器
     try:
         logger.info("正在初始化 SASimulator...")
-        from src.sa_simulator import SASimulator
         sa_simulator = SASimulator()
         # 注册停止处理函数，确保优雅关闭
         signal_manager.add_handler(lambda signum, frame: sa_simulator.stop())
