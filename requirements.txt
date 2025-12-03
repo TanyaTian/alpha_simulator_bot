@@ -9,3 +9,4 @@ flask
 DBUtils>=2.0  # 用于数据库连接池（PooledDB）
 aiohttp==3.9.5 # 添加 aiohttp 用于异步HTTP请求
 matplotlib>=3.0  # 添加 matplotlib 用于数据可视化
+tqdm  # 添加 tqdm 进度条库
