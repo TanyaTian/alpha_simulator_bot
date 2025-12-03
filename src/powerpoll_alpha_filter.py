@@ -9,6 +9,9 @@ from logger import Logger
 from config_manager import config_manager
 from dao import SimulatedAlphasDAO
 from utils import get_alphas_from_data
+from ace_lib import get_alpha_yearly_stats, check_session_and_relogin
+
+from datetime import datetime, timedelta
 
 class PowerPollAlphaFilter:
     def __init__(self):
@@ -39,36 +42,100 @@ class PowerPollAlphaFilter:
             
         return os_alpha_ids, os_alpha_rets
 
+    def _filter_by_sharpe_non_zero_years(self, alphas, region):
+        filtered_alphas = []
+        total_alphas = len(alphas)
+        if total_alphas == 0:
+            return []
+
+        self.logger.info(f"[{region}] Starting sharpe_non_zero_years filtering for {total_alphas} alphas.")
+        for idx, alpha in enumerate(alphas):
+            alpha_id = alpha[0]
+            try:
+                self.sess = check_session_and_relogin(self.sess)
+                stats = get_alpha_yearly_stats(self.sess, alpha_id)
+                if stats.empty:
+                    self.logger.warning(f"[{region}] Could not retrieve yearly stats for alpha {alpha_id}. Excluding it.")
+                    continue
+                
+                sharpe_non_zero_years = (stats['sharpe'] != 0.0).sum()
+
+                if sharpe_non_zero_years >= 8:
+                    filtered_alphas.append(alpha)
+                else:
+                    self.logger.info(f"[{region}] Excluding alpha {alpha_id} because sharpe_non_zero_years is {sharpe_non_zero_years} (< 8)")
+            except Exception as e:
+                self.logger.error(f"[{region}] Error processing alpha {alpha_id} for sharpe filter: {e}")
+            
+            if (idx + 1) % 50 == 0 or (idx + 1) == total_alphas:
+                self.logger.info(f"[{region}] Processed {idx + 1}/{total_alphas} alphas for sharpe filter.")
+
+        self.logger.info(f"[{region}] Finished sharpe_non_zero_years filtering. {len(filtered_alphas)} alphas passed.")
+        return filtered_alphas
+
     def get_alphas_by_datetime(self, datetime_str, per_page=1000):
         """
-        根据日期时间获取原始alpha数据行（自动分页获取所有数据）
+        根据日期时间从API获取原始alpha数据行（自动分页获取所有数据）
         
         参数:
             datetime_str: 日期时间字符串，格式为'%Y%m%d'
             per_page: 每页数量（默认为1000）
             
         返回:
-            原始alpha数据行列表（包含所有分页的数据）
+            从API获取的alpha数据字典列表
         """
-        # 获取总记录数
-        total = self.simulated_alphas_dao.count_by_datetime(datetime_str)
-        all_data_rows = []
+        dt_obj = datetime.strptime(datetime_str, '%Y%m%d')
+        # Use a fixed offset for consistency with the user's example.
+        # It's important to note that '-05:00' is Eastern Time (ET)
+        # If the server or user's local timezone varies, this might need dynamic adjustment.
+        # However, for now, we follow the provided example string.
+        timezone_offset = "-05:00" 
+        
+        start_date = dt_obj.strftime(f'%Y-%m-%dT00:00:00{timezone_offset}')
+        end_date = (dt_obj + timedelta(days=1)).strftime(f'%Y-%m-%dT00:00:00{timezone_offset}')
+
         offset = 0
+        all_alphas = []
         
-        # 分页获取所有数据
-        while offset < total:
-            # 获取当前页的数据
-            data_rows = self.simulated_alphas_dao.get_by_datetime_paginated(
-                datetime_str, 
-                limit=per_page, 
-                offset=offset
+        self.logger.info(f"Fetching alphas from API created between {start_date} and {end_date}")
+
+        while True:
+            # Construct the URL based on the user's provided example for date format and parameters.
+            url = (
+                f"https://api.worldquantbrain.com/users/self/alphas?limit={per_page}&offset={offset}"
+                f"&status=UNSUBMITTED%1FIS_FAIL" # Added status from example
+                f"&dateCreated>={start_date}&dateCreated<{end_date}"
+                f"&order=-dateCreated" # Added order from example
+                f"&hidden=false" # Added hidden from example
+                f"&type=REGULAR"
             )
-            all_data_rows.extend(data_rows)
             
-            # 更新offset以获取下一页数据
-            offset += per_page
-        
-        return all_data_rows
+            self.logger.info(f"Fetching alphas from URL: {url}")
+            
+            try:
+                self.sess = check_session_and_relogin(self.sess)
+                response = self.sess.get(url)
+                response.raise_for_status()  # Raise an HTTPError for bad responses (4xx or 5xx)
+                
+                data = response.json()
+                alphas_page = data.get("results", [])
+                
+                if not alphas_page:
+                    self.logger.info("No more alphas found on this page. Pagination complete.")
+                    break
+                
+                self.logger.info(f"Successfully fetched {len(alphas_page)} alphas from offset {offset}.")
+                all_alphas.extend(alphas_page)
+                
+                offset += per_page
+                
+            except Exception as e:
+                self.logger.error(f"An error occurred while fetching data from API: {e}")
+                self.logger.error("Stopping pagination due to error.")
+                break
+                
+        self.logger.info(f"Total alphas fetched from API for {datetime_str}: {len(all_alphas)}")
+        return all_alphas
     
     def generate_ppac_gold_bags(self, date, keywords_to_exclude, os_alpha_ids, os_alpha_rets):
         regions = ['USA', 'CHN', 'GLB', 'EUR', 'ASI']
@@ -78,12 +145,12 @@ class PowerPollAlphaFilter:
         ppa_tracker_hp_all = []
 
         # 获取指定日期的所有数据
-        data_rows = self.get_alphas_by_datetime(date)
+        data_rows = self.get_alphas_by_datetime(date, 100)
 
         # 先生成 stone_bag_atom 和 stone_bag_hp
         for region in regions:
             # atom 筛选
-            ppa_tracker_atom = get_alphas_from_data(
+            ppa_tracker_atom_unfiltered = get_alphas_from_data(
                 data_rows, 
                 min_sharpe=1.0, 
                 min_fitness=0.3, 
@@ -91,6 +158,7 @@ class PowerPollAlphaFilter:
                 region_filter=region, 
                 single_data_set_filter=True
             )
+            ppa_tracker_atom = self._filter_by_sharpe_non_zero_years(ppa_tracker_atom_unfiltered, region)
             ppa_tracker_atom_all.extend(ppa_tracker_atom)
             region_bag_atom = [
                 alpha[0] for alpha in ppa_tracker_atom 
@@ -99,7 +167,7 @@ class PowerPollAlphaFilter:
             stone_bag_atom[region] = region_bag_atom
 
             # hp 筛选
-            ppa_tracker_hp = get_alphas_from_data(
+            ppa_tracker_hp_unfiltered = get_alphas_from_data(
                 data_rows, 
                 min_sharpe=1.2, 
                 min_fitness=1.0, 
@@ -107,6 +175,7 @@ class PowerPollAlphaFilter:
                 region_filter=region, 
                 single_data_set_filter=None
             )
+            ppa_tracker_hp = self._filter_by_sharpe_non_zero_years(ppa_tracker_hp_unfiltered, region)
             ppa_tracker_hp_all.extend(ppa_tracker_hp)
             region_bag_hp = [
                 alpha[0] for alpha in ppa_tracker_hp 
@@ -208,7 +277,7 @@ def main():
     logger = Logger()
     logger.info("Starting PowerPoll Alpha Filter")
 
-    datetimes = ['20251015']  # 示例日期列表
+    datetimes = ['20251128']  # 示例日期列表
     
     try:
         # 初始化并运行

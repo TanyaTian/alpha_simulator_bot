@@ -4,6 +4,7 @@ from utils import load_config  # 导入配置加载工具
 from logger import Logger 
 import requests
 import time
+from ace_lib import SingleSession
 
 class ConfigManager:
     _instance_lock = threading.Lock()
@@ -44,7 +45,7 @@ class ConfigManager:
         username = ConfigManager._config['username']
         password = ConfigManager._config['password']
         
-        s = requests.Session()
+        s = SingleSession()
         s.auth = (username, password)
         count = 0
         count_limit = 30
@@ -133,4 +134,3 @@ class ConfigManager:
 
 # 创建单例实例
 config_manager = ConfigManager()
-

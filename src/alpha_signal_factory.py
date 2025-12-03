@@ -54,7 +54,7 @@ class AlphaSignalFactory:
             date_time: 日期时间
             priority: 任务优先级，默认为5
             mode: 处理模式，'test'为测试模式，'normal'为正常模式
-            filter_words: 过滤字段，为空时不进行过滤
+            filter_words: 过滤字段，可以是字符串或字符串列表，为空时不进行过滤
         """
         regions = ['USA', 'CHN', 'GLB', 'EUR', 'ASI']
         signal_optimize_set = {}
@@ -64,8 +64,15 @@ class AlphaSignalFactory:
         
         # 应用过滤字段
         if filter_words:
+            # 将单个过滤字段转换为列表格式
+            if isinstance(filter_words, str):
+                filter_words_list = [filter_words]
+            else:
+                filter_words_list = filter_words
+            
+            # 对列表中的所有字段进行过滤
             raw_signals = [signal for signal in raw_signals 
-                          if filter_words not in signal.get('regular', '')]
+                          if not any(field in signal.get('regular', '') for field in filter_words_list)]
         
         if not raw_signals:
             self.logger.info("No signals found for processing")
@@ -561,7 +568,7 @@ def main():
     """
     主函数,用于从命令行调用生成优化alpha并插入数据库
     """
-    dates = ['20251015']  # 示例日期列表
+    dates = ['20251030', '20251031']  # 示例日期列表
     # 设置日志
     logger = Logger()
     logger.info("Starting Alpha Signal Factory")
@@ -570,7 +577,7 @@ def main():
         try:
             # 创建工厂对象并运行
             factory = AlphaSignalFactory()
-            factory.process_signals(date_time=date, priority=1, mode='normal', filter_words = '')
+            factory.process_signals(date_time=date, priority=1, mode='normal', filter_words = ['fnd65', 'call', 'anl', 'put', 'open', 'close', 'volume', 'amount'])
             logger.info("✅ Alpha signal processing completed successfully")
         except Exception as e:
             logger.error(f"❌ Alpha signal processing failed: {str(e)}")

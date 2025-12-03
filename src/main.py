@@ -83,6 +83,23 @@ async def main():
     except Exception as e:
         logger.error(f"AlphaChecker 初始化或启动失败: {e}")
         return
+
+    # 5. 初始化并运行 Super Alpha 模拟器
+    try:
+        logger.info("正在初始化 SASimulator...")
+        from src.sa_simulator import SASimulator
+        sa_simulator = SASimulator()
+        # 注册停止处理函数，确保优雅关闭
+        signal_manager.add_handler(lambda signum, frame: sa_simulator.stop())
+        # 使用 batch_size=30 调用 run_simulation_loop
+        loop.run_in_executor(
+            executor,
+            lambda: sa_simulator.run_simulation_loop(batch_size=30, sleep_interval=60)
+        )
+        logger.info("SASimulator 服务已在工作线程中启动 (batch_size=30)。")
+    except Exception as e:
+        logger.error(f"SASimulator 初始化或启动失败: {e}")
+        return
     
     
     # 2. 初始化并运行AlphaFilter

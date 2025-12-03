@@ -77,6 +77,31 @@ def load_config(config_file="config/config.ini"):
             'region_set': region_set
         }
 
+        # Load SA simulator configurations if they exist
+        if config.has_option('Credentials', 'sa_simulator_region'):
+            config_data['sa_simulator_region'] = config.get('Credentials', 'sa_simulator_region')
+        
+        if config.has_option('Credentials', 'sa_simulator_concurrent_simulations'):
+            try:
+                config_data['sa_simulator_concurrent_simulations'] = config.getint('Credentials', 'sa_simulator_concurrent_simulations')
+            except ValueError:
+                # If not an integer, try to get as string
+                config_data['sa_simulator_concurrent_simulations'] = config.get('Credentials', 'sa_simulator_concurrent_simulations')
+
+        # Load LLM configuration if section exists
+        if config.has_section('LLM'):
+            config_data.update({
+                'llm_free_base_url': config.get('LLM', 'llm_free_base_url', fallback='https://api.deepseek.com'),
+                'llm_free_api_key': config.get('LLM', 'llm_free_api_key', fallback=''),
+                'llm_free_model': config.get('LLM', 'llm_free_model', fallback='deepseek-ai/DeepSeek-V3.2-Exp'),
+                'llm_paid_base_url': config.get('LLM', 'llm_paid_base_url', fallback='https://api.openai.com/v1'),
+                'llm_paid_api_key': config.get('LLM', 'llm_paid_api_key', fallback=''),
+                'llm_paid_model': config.get('LLM', 'llm_paid_model', fallback='gpt-4'),
+                'llm_base_url': config.get('LLM', 'llm_base_url', fallback='https://api.deepseek.com'),
+                'llm_api_key': config.get('LLM', 'llm_api_key', fallback=''),
+                'llm_model': config.get('LLM', 'llm_model', fallback='deepseek-chat')
+            })
+
         # 日志记录参数值，方便调试
         logger.info(f"Loaded config from {config_path}: username={config_data['username']}, "
                    f"max_concurrent={config_data['max_concurrent']} (type: {type(config_data['max_concurrent'])}), "
@@ -162,16 +187,19 @@ def get_alphas_from_data(data_rows, min_sharpe, min_fitness, mode="track", regio
             alpha_id = row['id']
             
             # Parse the settings dictionary
-            settings = ast.literal_eval(row['settings'])
+            settings = row['settings']
             decay = settings.get('decay', 0)
+
+            if settings.get('decay') == 0 and settings.get('neutralization') == 'NONE':
+                continue
             
             # Parse the regular code (expression)
-            regular = ast.literal_eval(row['regular'])
+            regular = row['regular']
             exp = fix_newline_expression(regular.get('code', ''))
             operatorCount = regular.get('operatorCount', 0)
             
             # Parse the is dictionary
-            is_data = ast.literal_eval(row['is'])
+            is_data = row['is']
             sharpe = is_data.get('sharpe', 0)
             fitness = is_data.get('fitness', 0)
             turnover = is_data.get('turnover', 0)
@@ -188,7 +216,7 @@ def get_alphas_from_data(data_rows, min_sharpe, min_fitness, mode="track", regio
                 
             # Apply single data set filter if specified
             if single_data_set_filter is not None:
-                classifications = ast.literal_eval(row.get('classifications', '[]'))
+                classifications = row.get('classifications', '[]')
                 is_single_data_set = any(
                     classification.get('id') == 'DATA_USAGE:SINGLE_DATA_SET' 
                     for classification in classifications
@@ -331,4 +359,3 @@ def extract_datafields(alpha_expression: str, filter_list: list = None) -> list:
             datafields.add(field)
 
     return list(datafields)
-

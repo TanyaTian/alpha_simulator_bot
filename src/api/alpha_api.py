@@ -22,7 +22,7 @@ def process_data_exploration_trigger():
 
     Example:
     curl -X POST http://localhost:5001/data-exploration/process -H "Content-Type: application/json" -d '{"datetime": "20251018"}'
-    curl -X POST http://localhost:5001/data-exploration/process -H "Content-Type: application/json" -d '{"datetime": "20251018", "force_process": True}'
+    curl -X POST http://47.111.116.132:5001/data-exploration/process -H "Content-Type: application/json" -d '{"datetime": "20251018", "force_process": True}'
     """
     data = request.get_json()
     datetime = data.get('datetime')
