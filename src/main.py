@@ -94,7 +94,7 @@ async def main():
         # 使用 batch_size=30 调用 run_simulation_loop
         loop.run_in_executor(
             executor,
-            lambda: sa_simulator.run_simulation_loop(batch_size=30, sleep_interval=60)
+            lambda: sa_simulator.run_simulation_loop(batch_size=12, sleep_interval=60)
         )
         logger.info("SASimulator 服务已在工作线程中启动 (batch_size=30)。")
     except Exception as e:
