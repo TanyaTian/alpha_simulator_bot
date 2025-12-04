@@ -1,6 +1,5 @@
 import getpass
 import json
-import logging
 import os
 import threading
 import time
@@ -13,14 +12,17 @@ from urllib.parse import urljoin
 import pandas as pd
 import requests
 import tqdm
+
 from helpful_functions import (
     expand_dict_columns,
     save_pnl,
     save_simulation_result,
     save_yearly_stats,
 )
+from logger import Logger
 
 DEV = False
+logger = Logger()
 
 
 class SingleSession(requests.Session):
@@ -45,40 +47,22 @@ class SingleSession(requests.Session):
         return self._relogin_lock
 
 
-def setup_logger() -> logging.Logger:
+class TqdmToLogger:
     """
-    This function sets up a logger that writes log messages to the console and,
-    if the global variable DEV is set to True, also to a file named 'ace.log'.
-
-    Returns:
-        logger (logging.Logger): The configured logger object.
-
-    The logger's name is set to 'ace.log'. The level of the logger and the console handler
-    is set to INFO if DEV is True, and WARNING otherwise. The format for the log messages
-    is: 'asctime' - 'name' - 'levelname' - 'message'.
+    File-like object to redirect tqdm output to a logger.
     """
-    logger = logging.getLogger("ace")
-    level = logging.DEBUG if DEV else logging.INFO
+    def __init__(self, logger):
+        self.logger = logger
+        self.buf = ''
 
-    logger.setLevel(level)
+    def write(self, buf):
+        message = buf.strip('\r\n\t ')
+        if message:
+            self.logger.info(message)
 
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(level)
+    def flush(self):
+        pass
 
-    formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-    console_handler.setFormatter(formatter)
-
-    logger.addHandler(console_handler)
-
-    file_handler = logging.FileHandler("ace.log")
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
-
-    return logger
-
-
-logger = setup_logger()
 
 
 DEFAULT_CONFIG = {
@@ -908,8 +892,9 @@ def simulate_alpha_list(
 
     result_list = []
 
+    tqdm_out = TqdmToLogger(logger)
     with ThreadPool(limit_of_concurrent_simulations) as pool:
-        with tqdm.tqdm(total=len(alpha_list)) as pbar:
+        with tqdm.tqdm(total=len(alpha_list), file=tqdm_out) as pbar:
             for result in pool.imap_unordered(partial(simulate_single_alpha, s), alpha_list):
                 result_list.append(result)
                 pbar.update()
@@ -979,8 +964,9 @@ def simulate_alpha_list_multi(
     ]
     result_list = []
 
+    tqdm_out = TqdmToLogger(logger)
     with ThreadPool(limit_of_concurrent_simulations) as pool:
-        with tqdm.tqdm(total=len(tasks)) as pbar:
+        with tqdm.tqdm(total=len(tasks), file=tqdm_out) as pbar:
             for result in pool.imap_unordered(partial(simulate_multi_alpha, s), tasks):
                 result_list.append(result)
                 pbar.update()

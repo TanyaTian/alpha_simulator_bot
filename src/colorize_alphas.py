@@ -85,8 +85,8 @@ def main():
     # --- 参数配置 ---
     # 1. 成为顾问的日期，也是 Alpha 开始计算收益的日期
     start_date_str = "2025-03-27"
-    # 2. 您想要操作的目标区域
-    target_region = "EUR"
+    # 2. 您想要操作的目标区域列表
+    target_regions = ["USA", "EUR", "ASI", "GLB"]
     # 3. 用于分配的颜色列表 (None 代表清除颜色)
     colors_to_assign = [None, "RED", "YELLOW", "GREEN", "BLUE", "PURPLE"]
     # 4. 并发修改的线程数
@@ -99,7 +99,7 @@ def main():
     logger.info("配置信息:")
     logger.info(f"脚本起始日期: {start_date_str}")
     logger.info(f"脚本截止日期: {end_date_str}")
-    logger.info(f"目标区域: {target_region}")
+    logger.info(f"目标区域列表: {target_regions}")
     logger.info(f"待分配颜色: {['无' if c is None else c for c in colors_to_assign]}")
     logger.info("-" * 40)
 
@@ -109,52 +109,62 @@ def main():
         logger.error("无法获取 session，脚本退出。")
         return
 
-    # --- 获取 Alphas ---
-    alphas_to_color = get_submitted_alphas(sess, start_date_str, end_date_str, target_region, logger)
+    # 循环处理每个区域
+    for target_region in target_regions:
+        logger.info(f"\n{'#' * 60}")
+        logger.info(f"开始处理区域: {target_region}")
+        logger.info(f"{'#' * 60}")
+        
+        # --- 获取 Alphas ---
+        alphas_to_color = get_submitted_alphas(sess, start_date_str, end_date_str, target_region, logger)
 
-    if not alphas_to_color:
-        logger.warning(f"在指定时间范围和区域 {target_region} 内未找到任何 Alpha，程序结束。")
-        return
+        if not alphas_to_color:
+            logger.warning(f"在指定时间范围和区域 {target_region} 内未找到任何 Alpha，跳过该区域。")
+            continue
 
-    # --- 随机化并分配颜色 ---
-    logger.info(f"找到 {len(alphas_to_color)} 个 Alpha，准备开始随机均衡分配颜色...")
+        # --- 随机化并分配颜色 ---
+        logger.info(f"找到 {len(alphas_to_color)} 个 Alpha，准备开始随机均衡分配颜色...")
 
-    random.shuffle(alphas_to_color)
-    logger.info("Alpha 列表已随机打乱。")
+        random.shuffle(alphas_to_color)
+        logger.info("Alpha 列表已随机打乱。")
 
-    tasks = []
-    color_assignments = []
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        for i, alpha_data in enumerate(alphas_to_color):
-            alpha_id = alpha_data["id"]
-            target_color = colors_to_assign[i % len(colors_to_assign)]
-            color_assignments.append(target_color)
-            tasks.append(executor.submit(update_alpha_color, sess, alpha_id, target_color, logger))
+        tasks = []
+        color_assignments = []
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            for i, alpha_data in enumerate(alphas_to_color):
+                alpha_id = alpha_data["id"]
+                target_color = colors_to_assign[i % len(colors_to_assign)]
+                color_assignments.append(target_color)
+                tasks.append(executor.submit(update_alpha_color, sess, alpha_id, target_color, logger))
 
-    results = [task.result() for task in tasks]
+        results = [task.result() for task in tasks]
 
-    # --- 打印总结报告 ---
+        # --- 打印区域总结报告 ---
+        logger.info("\n" + "=" * 50)
+        logger.info(f"区域 {target_region} 颜色分配任务已完成。")
+
+        planned_counts = Counter(color_assignments)
+        logger.info("\n计划分配的颜色统计:")
+        for color, count in planned_counts.items():
+            display_color = "无" if color is None else color
+            logger.info(f"- {display_color}: {count} 个")
+
+        success_counts = Counter(res for res in results if res != "FAILED")
+        failed_count = results.count("FAILED")
+
+        logger.info("\n实际成功分配的颜色统计:")
+        for color, count in success_counts.items():
+            display_color = "无" if color is None else color
+            logger.info(f"- {display_color}: {count} 个")
+
+        if failed_count > 0:
+            logger.warning(f"\n失败任务总数: {failed_count} 个")
+
+        logger.info(f"\n区域 {target_region} 处理完毕。")
+        logger.info("=" * 50)
+
     logger.info("\n" + "=" * 50)
-    logger.info("所有颜色分配任务已完成。")
-
-    planned_counts = Counter(color_assignments)
-    logger.info("\n计划分配的颜色统计:")
-    for color, count in planned_counts.items():
-        display_color = "无" if color is None else color
-        logger.info(f"- {display_color}: {count} 个")
-
-    success_counts = Counter(res for res in results if res != "FAILED")
-    failed_count = results.count("FAILED")
-
-    logger.info("\n实际成功分配的颜色统计:")
-    for color, count in success_counts.items():
-        display_color = "无" if color is None else color
-        logger.info(f"- {display_color}: {count} 个")
-
-    if failed_count > 0:
-        logger.warning(f"\n失败任务总数: {failed_count} 个")
-
-    logger.info("\n脚本执行完毕。")
+    logger.info("所有区域处理完毕，脚本执行完成。")
     logger.info("=" * 50)
 
 

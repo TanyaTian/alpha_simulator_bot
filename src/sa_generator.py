@@ -26,40 +26,40 @@ def generate_sa_combinations(priority: Any = 50, region: str = "USA") -> List[Di
     datacategories = ["analyst", "broker", "earnings", "fundamental", "imbalance", "insiders", "institutions", "macro", "model", "news", "option", "other", "pv", "risk", "sentiment", "shortinterest", "socialmedia"]
     selections = []
     for color in colors_to_assign:
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& (prod_correlation <0.6)")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& (prod_correlation >0.5)")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& ((long_count > 600 && long_count < 800) || (long_count > 1200 && long_count < 1400))")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& (turnover > 0.05)")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& (long_count > 500)")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& ((turnover > 0.05 && turnover < 0.08) || (turnover > 0.15 && turnover < 0.18)) && (prod_correlation < 0.55)")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& ((turnover > 0.05 && turnover < 0.08) || (turnover > 0.15 && turnover < 0.18)) && (prod_correlation > 0.45)")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& ((turnover > 0.05 && turnover < 0.08) || (turnover > 0.15 && turnover < 0.18))")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& ((long_count > 600 && long_count < 800) || (long_count > 1200 && long_count < 1400)) && (self_correlation < 0.5)")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& ((long_count > 600 && long_count < 800) || (long_count > 1200 && long_count < 1400)) && (self_correlation > 0.5)")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& ((long_count > 600 && long_count < 800) || (long_count > 1200 && long_count < 1400))")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& ((operator_count < 5) || (operator_count > 12)) && (prod_correlation < 0.55)")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& ((operator_count < 5) || (operator_count > 12)) && (prod_correlation > 0.45)")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& ((operator_count < 5) || (operator_count > 12))")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& ((short_count < 800 && short_count > 600) || (short_count > 1300)) && (prod_correlation < 0.55)")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& ((short_count < 800 && short_count > 600) || (short_count > 1300)) && (prod_correlation > 0.45)")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& ((short_count < 800 && short_count > 600) || (short_count > 1300))")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& (turnover < 0.25) && (prod_correlation < 0.6)")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& (turnover < 0.25) && (prod_correlation > 0.4)")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& (operator_count < 6) && (prod_correlation < 0.55)")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& (operator_count < 6) && (prod_correlation > 0.45)")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& (long_count > 800) && (prod_correlation < 0.6)")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& (self_correlation < 0.6)")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& (turnover < 0.25)")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& (operator_count < 6)")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& (long_count > 800)")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& (prod_correlation > 0.4)")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& (self_correlation > 0.3)")
-        selections["POSITIVE"].append(f"own  && (color != '{color}')&& ((self_correlation <= 0.45) * (prod_correlation < 0.55))")
+        selections.append(f"own  && (color != '{color}')&& (prod_correlation <0.6)")
+        selections.append(f"own  && (color != '{color}')&& (prod_correlation >0.5)")
+        selections.append(f"own  && (color != '{color}')")
+        selections.append(f"own  && (color != '{color}')&& ((long_count > 600 && long_count < 800) || (long_count > 1200 && long_count < 1400))")
+        selections.append(f"own  && (color != '{color}')&& (turnover > 0.05)")
+        selections.append(f"own  && (color != '{color}')&& (long_count > 500)")
+        selections.append(f"own  && (color != '{color}')&& ((turnover > 0.05 && turnover < 0.08) || (turnover > 0.15 && turnover < 0.18)) && (prod_correlation < 0.55)")
+        selections.append(f"own  && (color != '{color}')&& ((turnover > 0.05 && turnover < 0.08) || (turnover > 0.15 && turnover < 0.18)) && (prod_correlation > 0.45)")
+        selections.append(f"own  && (color != '{color}')&& ((turnover > 0.05 && turnover < 0.08) || (turnover > 0.15 && turnover < 0.18))")
+        selections.append(f"own  && (color != '{color}')&& ((long_count > 600 && long_count < 800) || (long_count > 1200 && long_count < 1400)) && (self_correlation < 0.5)")
+        selections.append(f"own  && (color != '{color}')&& ((long_count > 600 && long_count < 800) || (long_count > 1200 && long_count < 1400)) && (self_correlation > 0.5)")
+        selections.append(f"own  && (color != '{color}')&& ((long_count > 600 && long_count < 800) || (long_count > 1200 && long_count < 1400))")
+        selections.append(f"own  && (color != '{color}')&& ((operator_count < 5) || (operator_count > 12)) && (prod_correlation < 0.55)")
+        selections.append(f"own  && (color != '{color}')&& ((operator_count < 5) || (operator_count > 12)) && (prod_correlation > 0.45)")
+        selections.append(f"own  && (color != '{color}')&& ((operator_count < 5) || (operator_count > 12))")
+        selections.append(f"own  && (color != '{color}')&& ((short_count < 800 && short_count > 600) || (short_count > 1300)) && (prod_correlation < 0.55)")
+        selections.append(f"own  && (color != '{color}')&& ((short_count < 800 && short_count > 600) || (short_count > 1300)) && (prod_correlation > 0.45)")
+        selections.append(f"own  && (color != '{color}')&& ((short_count < 800 && short_count > 600) || (short_count > 1300))")
+        selections.append(f"own  && (color != '{color}')&& (turnover < 0.25) && (prod_correlation < 0.6)")
+        selections.append(f"own  && (color != '{color}')&& (turnover < 0.25) && (prod_correlation > 0.4)")
+        selections.append(f"own  && (color != '{color}')&& (operator_count < 6) && (prod_correlation < 0.55)")
+        selections.append(f"own  && (color != '{color}')&& (operator_count < 6) && (prod_correlation > 0.45)")
+        selections.append(f"own  && (color != '{color}')&& (long_count > 800) && (prod_correlation < 0.6)")
+        selections.append(f"own  && (color != '{color}')&& (self_correlation < 0.6)")
+        selections.append(f"own  && (color != '{color}')&& (turnover < 0.25)")
+        selections.append(f"own  && (color != '{color}')&& (operator_count < 6)")
+        selections.append(f"own  && (color != '{color}')&& (long_count > 800)")
+        selections.append(f"own  && (color != '{color}')&& (prod_correlation > 0.4)")
+        selections.append(f"own  && (color != '{color}')&& (self_correlation > 0.3)")
+        selections.append(f"own  && (color != '{color}')&& ((self_correlation <= 0.45) * (prod_correlation < 0.55))")
         for category in datacategories:
-            selections["POSITIVE"].append(f"own && (color != '{color}') && (not(in(datacategories, '{category}')))")
+            selections.append(f"own && (color != '{color}') && (not(in(datacategories, '{category}')))")
         for neutralization in neutralizations_by_region[region]:
-            selections["POSITIVE"].append(f"own && (color != '{color}') && (neutralization != '{neutralization}')")
+            selections.append(f"own && (color != '{color}') && (neutralization != '{neutralization}')")
 
     combos = [
         '1',
@@ -145,7 +145,7 @@ def main():
     # new_tasks = generate_sa_combinations(priority=1, region="USA")
     
     # 示例2: 将任务随机分配到 1-10 的优先级
-    region = "USA"
+    region = "EUR"
     new_tasks = generate_sa_combinations(priority=(1, 10), region=region)
     
     if new_tasks:
