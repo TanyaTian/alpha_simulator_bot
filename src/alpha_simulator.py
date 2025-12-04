@@ -196,7 +196,7 @@ class AlphaSimulator:
 
                 if "Location" in response.headers:
                     duration = time.time() - start_time
-                    self.logger.info(f"[Performance] action=simulate_alpha_batch duration={duration:.4f}s batch_size={len(alpha_list)}")
+                    self.logger.debug(f"[Performance] action=simulate_alpha_batch duration={duration:.4f}s batch_size={len(alpha_list)}")
                     self.logger.info("Alpha batch location retrieved successfully.")
                     self.logger.info(f"Location: {response.headers['Location']}")
                     return response.headers['Location']
@@ -215,7 +215,7 @@ class AlphaSimulator:
                 count += 1
 
         duration = time.time() - start_time
-        self.logger.error(f"[Performance] action=simulate_alpha_batch status=failed duration={duration:.4f}s batch_size={len(alpha_list)}")
+        self.logger.debug(f"[Performance] action=simulate_alpha_batch status=failed duration={duration:.4f}s batch_size={len(alpha_list)}")
         self.logger.error(f"Simulation request failed after {count} attempts for alpha batch")
         return None
     
@@ -275,7 +275,7 @@ class AlphaSimulator:
                 load_cache_start_time = time.time()
                 db_records = self.cache_manager.get_pending_alphas_by_region(region, self.batch_size)
                 load_cache_duration = time.time() - load_cache_start_time
-                self.logger.info(f"[Performance] action=load_alphas_from_cache duration={load_cache_duration:.4f}s region={region} count={len(db_records)}")
+                self.logger.debug(f"[Performance] action=load_alphas_from_cache duration={load_cache_duration:.4f}s region={region} count={len(db_records)}")
 
                 if not db_records:
                     self.logger.info(f"No pending alphas fetched from cache for region: {region}.")
@@ -323,7 +323,7 @@ class AlphaSimulator:
                         record_ids=record_ids
                     ))
                     insert_heap_duration = time.time() - insert_heap_start_time
-                    self.logger.info(f"[Performance] action=insert_to_heap duration={insert_heap_duration:.4f}s")
+                    self.logger.debug(f"[Performance] action=insert_to_heap duration={insert_heap_duration:.4f}s")
 
                     self.active_simulations_dict[location_url] = record_ids
                     self.active_update_time = time.time()
@@ -339,7 +339,7 @@ class AlphaSimulator:
                     flush_start_time = time.time()
                     self.cache_manager.flush()
                     flush_duration = time.time() - flush_start_time
-                    self.logger.info(f"[Performance] action=flush_cache_on_threshold duration={flush_duration:.4f}s")
+                    self.logger.debug(f"[Performance] action=flush_cache_on_threshold duration={flush_duration:.4f}s")
 
             except Exception as e:
                 self.logger.error(f"Error during simulation: {e}")
@@ -351,7 +351,7 @@ class AlphaSimulator:
                             flush_err_start_time = time.time()
                             self.cache_manager.flush()
                             flush_err_duration = time.time() - flush_err_start_time
-                            self.logger.info(f"[Performance] action=flush_cache_on_error duration={flush_err_duration:.4f}s")
+                            self.logger.debug(f"[Performance] action=flush_cache_on_error duration={flush_err_duration:.4f}s")
                     except Exception as cache_error:
                         self.logger.error(f"Failed to update cache status on error: {cache_error}")
     
@@ -418,7 +418,7 @@ class AlphaSimulator:
             check_progress_start_time = time.time()
             result = self.check_simulation_progress(task.location_url)
             check_progress_duration = time.time() - check_progress_start_time
-            self.logger.info(f"[Performance] action=check_single_progress duration={check_progress_duration:.4f}s url={task.location_url}")
+            self.logger.debug(f"[Performance] action=check_single_progress duration={check_progress_duration:.4f}s url={task.location_url}")
 
             if result is None:
                 delay = self._calculate_backoff_delay(task.backoff_factor, task.retry_count, task.min_delay)
@@ -452,7 +452,7 @@ class AlphaSimulator:
                     buffer_start_time = time.time()
                     self.cache_manager.add_simulation_tasks_batch(data_list)
                     buffer_duration = time.time() - buffer_start_time
-                    self.logger.info(f"[Performance] action=buffer_completed_tasks duration={buffer_duration:.4f}s count={len(result)}")
+                    self.logger.debug(f"[Performance] action=buffer_completed_tasks duration={buffer_duration:.4f}s count={len(result)}")
                     
                     self.logger.info(f"💾 Buffered {len(result)} children for {task.location_url}")
                     
@@ -461,14 +461,14 @@ class AlphaSimulator:
                         flush_start_time = time.time()
                         self.cache_manager.flush()
                         flush_duration = time.time() - flush_start_time
-                        self.logger.info(f"[Performance] action=flush_cache_on_completion duration={flush_duration:.4f}s")
+                        self.logger.debug(f"[Performance] action=flush_cache_on_completion duration={flush_duration:.4f}s")
                 except Exception as e:
                     self.logger.error(f"Failed to buffer children tasks: {e}")
 
                 completed_count += 1
 
         current_active = len(self.simulation_heap)
-        self.logger.info(
+        self.logger.debug(
             f"Checked: {checked_count}, "
             f"Completed: {completed_count}, "
             f"Failed: {failed_count}, "
@@ -510,18 +510,18 @@ class AlphaSimulator:
                 check_start_time = time.time()
                 self.check_simulation_status()
                 check_end_time = time.time()
-                self.logger.info(f"[Performance] action=polling_check_all duration={check_end_time - check_start_time:.4f}s")
+                self.logger.debug(f"[Performance] action=polling_check_all duration={check_end_time - check_start_time:.4f}s")
                 
                 # 2. 尝试加载新任务以填充空闲槽位
                 load_start_time = time.time()
                 self.load_new_alpha_and_simulate()
                 load_end_time = time.time()
-                self.logger.info(f"[Performance] action=load_and_simulate_all duration={load_end_time - load_start_time:.4f}s")
+                self.logger.debug(f"[Performance] action=load_and_simulate_all duration={load_end_time - load_start_time:.4f}s")
 
                 # 3. 计算并记录从上次检查结束到本次加载完成的耗时
                 if last_check_end_time is not None:
                     idle_to_load_duration = load_end_time - last_check_end_time
-                    self.logger.info(f"[Performance] action=cycle_check_to_load_finish duration={idle_to_load_duration:.4f}s")
+                    self.logger.debug(f"[Performance] action=cycle_check_to_load_finish duration={idle_to_load_duration:.4f}s")
                 
                 last_check_end_time = time.time()
 
