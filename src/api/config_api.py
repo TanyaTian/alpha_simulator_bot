@@ -8,7 +8,7 @@ config_bp = Blueprint('config_api', __name__, url_prefix='/config')
 def get_config():
     """Get the current configuration from memory.
 
-    curl -X GET http://localhost:5001/config
+    curl -X GET http://47.111.116.132:5001/config
     """
     config_manager.logger.debug("GET /config endpoint accessed")
     result = jsonify(config_manager.get_all())
@@ -20,7 +20,7 @@ def update_config():
     """Update the configuration and notify observers.
 
     curl -X POST http://localhost:5001/config/update -H "Content-Type: application/json" -d '{"max_concurrent": 8}'
-    curl -X POST http://localhost:5001/config/update -H "Content-Type: application/json" -d '{"region_set": ["USA"]}'
+    curl -X POST http://47.111.116.132:5001/config/update -H "Content-Type: application/json" -d '{"region_set": ["IND"]}'
     """
     config_manager.logger.info("POST /config/update endpoint accessed")
     data = request.json

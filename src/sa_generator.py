@@ -145,7 +145,7 @@ def main():
     # new_tasks = generate_sa_combinations(priority=1, region="USA")
     
     # 示例2: 将任务随机分配到 1-10 的优先级
-    region = "EUR"
+    region = "GLB"
     new_tasks = generate_sa_combinations(priority=(1, 10), region=region)
     
     if new_tasks:

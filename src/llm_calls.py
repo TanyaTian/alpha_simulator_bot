@@ -137,87 +137,6 @@ def generate_super_alpha_descriptions(session, alpha_id: str) -> tuple[str, str]
         print(f"An error occurred while generating super alpha descriptions for {alpha_id}: {e}")
         return None, None
 
-def safe_llm_call(messages, llm_config=None):
-    """
-    Safely call the LLM with the given messages.
-    
-    Args:
-        messages: List of message dictionaries for the LLM
-        llm_config: Optional custom LLM configuration dictionary. If None, uses default from config.
-    
-    Returns:
-        LLM response or None if error
-    """
-    try:
-        from langchain_openai import ChatOpenAI
-        
-        if llm_config is None:
-            # Use default configuration from config manager
-            llm_config = {
-                'base_url': config_manager.get('llm_base_url', 'https://api.deepseek.com'),
-                'api_key': config_manager.get('llm_api_key', ''),
-                'model': config_manager.get('llm_model', 'deepseek-chat')
-            }
-        
-        if not llm_config.get('api_key') or llm_config['api_key'] == 'your_api_key_here':
-            print("Warning: LLM API key not configured. Please update config.ini")
-            return None
-            
-        chat = ChatOpenAI(
-            model_name=llm_config.get('model', 'deepseek-chat'),
-            openai_api_base=llm_config['base_url'],
-            openai_api_key=llm_config['api_key']
-        )
-        
-        response = chat.invoke(messages)
-        return response
-
-    except Exception as e:
-        print(f"Error calling LLM: {e}")
-        return None
-
-def safe_llm_call_with_tool(messages, tools, llm_config=None):
-    """
-    Safely call the LLM with messages and tools.
-    
-    Args:
-        messages: List of message dictionaries for the LLM
-        tools: List of tools to bind to the LLM
-        llm_config: Optional custom LLM configuration dictionary. If None, uses default from config.
-    
-    Returns:
-        LLM response or None if error
-    """
-    try:
-        from langchain_openai import ChatOpenAI
-        
-        if llm_config is None:
-            # Use default configuration from config manager
-            llm_config = {
-                'base_url': config_manager.get('llm_base_url', 'https://api.deepseek.com'),
-                'api_key': config_manager.get('llm_api_key', ''),
-                'model': config_manager.get('llm_model', 'deepseek-chat')
-            }
-        
-        if not llm_config.get('api_key') or llm_config['api_key'] == 'your_api_key_here':
-            print("Warning: LLM API key not configured. Please update config.ini")
-            return None
-            
-        chat = ChatOpenAI(
-            model_name=llm_config.get('model', 'deepseek-chat'),
-            openai_api_base=llm_config['base_url'],
-            openai_api_key=llm_config['api_key']
-        )
-        
-        llm_with_tools = chat.bind_tools(tools)
-        
-        response = llm_with_tools.invoke(messages)
-        return response
-
-    except Exception as e:
-        print(f"Error calling LLM with tools: {e}")
-        return None
-
 if __name__ == '__main__':
     # This is an example of how to use the LLM functions.
     # You will need a valid brain session to run this.
@@ -243,12 +162,3 @@ if __name__ == '__main__':
         print(f"Paid LLM response: {response}")
     else:
         print("Paid LLM call failed or not configured")
-    
-    # Test safe_llm_call
-    print("\nTesting safe_llm_call with langchain")
-    messages = [{"role": "user", "content": test_prompt}]
-    response = safe_llm_call(messages)
-    if response:
-        print(f"Langchain LLM response: {response}")
-    else:
-        print("Langchain LLM call failed or not configured")

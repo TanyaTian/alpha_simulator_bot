@@ -13,45 +13,27 @@ import os
 from config_manager import config_manager
 from dao import SimulatedAlphasDAO
 from dao import AlphaSignalDAO
+import requests
+from ace_lib import get_alpha_yearly_stats
 
 class AlphaFilter:
     """
     一个类，用于筛选 alpha 数据，计算相关性，并按区域保存结果。
-
-    该类从 simulated_alphas.csv 文件中读取 alpha 数据，基于 fitness 和 sharpe 筛选 alpha,
-    使用筛选后的 alpha 生成 os_alpha_ids 和 os_alpha_rets,逐一计算每个 alpha 的最大相关性
-    （移除自身后）,筛选相关性低于阈值的 alpha,并按区域写入 CSV 文件。
+    该类被设计为按需服务，由API调用触发，处理指定日期的alpha数据。
     """
     def __init__(self, signal_manager=None):
         """
-        初始化 AlphaFilter,自动设置日期为前一天
-        
-        参数:
-            username (str): WorldQuant Brain API 用户名
-            password (str): WorldQuant Brain API 密码
-            data_dir (str): 数据目录，默认为 "data"
+        初始化 AlphaFilter。
         """
-        self.date_str = (datetime.now() - timedelta(days=1)).strftime("%Y%m%d")
-
         self.os_alpha_ids: Optional[Dict[str, List]] = None
         self.os_alpha_rets: Optional[pd.DataFrame] = None
         self.logger = Logger()
-        self._stop_event = threading.Event()
-
-        self.simulated_alphas_dao = SimulatedAlphasDAO()
         self.alpha_signal_dao = AlphaSignalDAO()
         
-        # 注册信号处理
-        if signal_manager:
-            signal_manager.add_handler(self.handle_exit_signal)
-        else:
-            self.logger.warning("未提供 SignalManager,AlphaSimulator 无法注册信号处理函数")
-
         # 从配置中心获取参数
         self._load_config_from_manager()
         
     def _load_config_from_manager(self):
-        
         """从配置中心加载运行时参数"""
         config = config_manager._config  # 直接访问内部配置
         
@@ -65,133 +47,222 @@ class AlphaFilter:
         
         self.logger.info(f"Loaded config session success in AlphaFilter")
     
-
-    def handle_exit_signal(self, signum, frame):
-        self.logger.info(f"Received shutdown signal {signum}, saving unfinished alpha IDs...")
-        self.stop_monitoring()
-
-
-    def load_alpha_data(self) -> pd.DataFrame:
+    def _fetch_alphas_from_api(self, date_str: str, per_page: int = 1000) -> pd.DataFrame:
         """
-        从数据库中加载指定日期的 alpha 数据，使用分页查询避免一次加载过多数据。
-
+        根据指定日期从API获取原始alpha数据行（自动分页获取所有数据）。
+        该实现参考了 D:\repos\alpha_simulator_bot\src\powerpoll_alpha_filter.py 中的 get_alphas_by_datetime 方法。
+        
+        参数:
+            date_str: 日期时间字符串，格式为'%Y%m%d'
+            per_page: 每页数量（默认为1000）
+            
         返回:
-            pd.DataFrame: 包含 alpha 数据的 DataFrame。
-
-        异常:
-            Exception: 如果数据库查询失败。
+            包含从API获取的alpha数据的DataFrame。
         """
-        try:
+        dt_obj = datetime.strptime(date_str, '%Y%m%d')
+        timezone_offset = "-05:00"  # Per reference implementation
+        
+        start_date = dt_obj.strftime(f'%Y-%m-%dT00:00:00{timezone_offset}')
+        end_date = (dt_obj + timedelta(days=1)).strftime(f'%Y-%m-%dT00:00:00{timezone_offset}')
+
+        offset = 0
+        all_alphas = []
+        
+        self.logger.info(f"Fetching alphas from API created between {start_date} and {end_date}")
+
+        while True:
+            # URL构建参考了 powerpoll_alpha_filter.py
+            url = (
+                f"https://api.worldquantbrain.com/users/self/alphas?limit={per_page}&offset={offset}"
+                f"&status=UNSUBMITTED%1FIS_FAIL"
+                f"&dateCreated>={start_date}&dateCreated<{end_date}"
+                f"&order=-dateCreated"
+                f"&hidden=false"
+                f"&type=REGULAR"
+            )
             
-            total_count = self.simulated_alphas_dao.count_by_datetime(self.date_str)
-            self.logger.info(f"Total alphas in database for date {self.date_str}: {total_count}")
+            self.logger.info(f"Fetching alphas from URL (offset: {offset})")
             
-            if total_count == 0:
-                self.logger.warning(f"No alphas found for date {self.date_str} in database")
-                return pd.DataFrame()
+            try:
+                # 重新认证会话，确保会话有效
+                self.sess = config_manager.get_session()
+
+                response = self.sess.get(url, timeout=30)
+                response.raise_for_status()
+                
+                data = response.json()
+                alphas_page = data.get("results", [])
+                
+                if not alphas_page:
+                    self.logger.info("No more alphas found on this page. Pagination complete.")
+                    break
+                
+                self.logger.info(f"Successfully fetched {len(alphas_page)} alphas from offset {offset}.")
+                all_alphas.extend(alphas_page)
+                
+                offset += per_page
+                
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 404:
+                    self.logger.info(f"API returned 404 for date {date_str}, which might be expected if no alphas were created on a given page.")
+                    break # 404 意味着没有数据，分页结束
+                self.logger.error(f"HTTP error while fetching data: {e}")
+                raise  # 将其他HTTP错误向上抛出
+            except Exception as e:
+                self.logger.error(f"An unexpected error occurred while fetching data from API: {e}")
+                self.logger.error("Stopping pagination due to error.")
+                raise # 将异常向上抛出
+
+        self.logger.info(f"Total alphas fetched from API for {date_str}: {len(all_alphas)}")
+        return pd.DataFrame(all_alphas)
+
+    def process_alphas(self, date_str: str, min_fitness: float, min_sharpe: float, corr_threshold: float):
+        """
+        为指定日期执行完整的Alpha筛选流程。
+        成功执行则正常返回，若发生任何错误则向上抛出异常。
+        """
+        self.logger.info(f"Processing alphas for {date_str} with params: fitness>={min_fitness}, sharpe>={min_sharpe}, corr<{corr_threshold}")
+        
+        df = self._fetch_alphas_from_api(date_str)
+        if df.empty:
+            self.logger.info(f"No data to process for {date_str}. Task finished.")
+            return
+
+        # 步骤 1: 初步筛选
+        alpha_result = self.filter_alphas(df, min_fitness, min_sharpe, ['trade_when'])
+        if not alpha_result:
+            self.logger.info(f"No alphas passed initial filtering. Task finished.")
+            return
+
+        # 步骤 2: 根据年度统计数据进行过滤
+        alpha_result = self._filter_by_yearly_stats(alpha_result)
+        if not alpha_result:
+            self.logger.info(f"No alphas passed the yearly stats filter. Task finished.")
+            return
+
+        # 步骤 3: 准备相关性计算数据
+        self.generate_comparison_data(alpha_result)
+        
+        # 步骤 4: 通过相关性过滤
+        filtered_alphas = self.calculate_correlations(alpha_result, corr_threshold)
+        if not any(filtered_alphas.values()):
+            self.logger.info(f"No alphas passed correlation filtering. Task finished.")
+            return
             
-            page_size = 1000  # 每页加载1000条记录
-            all_rows = []
+        # 步骤 5: 保存最终结果
+        self.save_filtered_alphas(filtered_alphas)
+        self.logger.info(f"Successfully completed alpha processing for {date_str}")
+
+    def _filter_by_yearly_stats(self, alphas: List[Dict]) -> List[Dict]:
+        """
+        根据sharpe不为零的年数过滤alpha。
+        sharpe不为零的年数少于8年的alpha将被排除。
+        此方法参考了powerpoll_alpha_filter.py中的逻辑。
+        """
+        filtered_alphas = []
+        total_alphas = len(alphas)
+        if total_alphas == 0:
+            return []
+
+        self.logger.info(f"Starting yearly stats filtering for {total_alphas} alphas.")
+        for idx, alpha in enumerate(alphas):
+            alpha_id = alpha['id']
             
-            for offset in range(0, total_count, page_size):
-                self.logger.debug(f"Loading alphas from database: offset={offset}, limit={page_size}")
-                chunk = self.simulated_alphas_dao.get_by_datetime_paginated(self.date_str, limit=page_size, offset=offset)
-                all_rows.extend(chunk)
-                self.logger.debug(f"Loaded {len(chunk)} alphas (total so far: {len(all_rows)})")
+            # 定期重新认证会话以防过期
+            if idx > 0 and idx % 50 == 0:
+                self.logger.info("Re-authenticating session...")
+                self.sess = config_manager.get_session()
+
+            try:
+                stats = get_alpha_yearly_stats(self.sess, alpha_id)
+                if stats.empty:
+                    self.logger.warning(f"Could not retrieve yearly stats for alpha {alpha_id}. Excluding it.")
+                    continue
+                
+                # 计算sharpe不为零的年数
+                sharpe_non_zero_years = (stats['sharpe'] != 0.0).sum()
+
+                if sharpe_non_zero_years >= 8:
+                    filtered_alphas.append(alpha)
+                else:
+                    self.logger.info(f"Excluding alpha {alpha_id}: years with non-zero sharpe is {sharpe_non_zero_years} (less than 8).")
             
-            df = pd.DataFrame(all_rows)
-            self.logger.info(f"Successfully loaded {len(df)} alphas from database for date {self.date_str}")
-            return df
-        except Exception as e:
-            self.logger.error(f"Failed to load alpha data from database: {e}")
-            raise
+            except Exception as e:
+                self.logger.error(f"Error processing alpha {alpha_id} for yearly stats filter: {e}", exc_info=True)
+            
+            if (idx + 1) % 50 == 0 or (idx + 1) == total_alphas:
+                self.logger.info(f"Processed {idx + 1}/{total_alphas} alphas for yearly stats filter.")
+
+        self.logger.info(f"Finished yearly stats filtering. {len(filtered_alphas)}/{total_alphas} alphas passed.")
+        return filtered_alphas
 
     def filter_alphas(self, df: pd.DataFrame, min_fitness: float, min_sharpe: float, exclude_operators: List[str] = None) -> List[Dict]:
         """
-        筛选符合 fitness 和 sharpe 条件的 alpha,过滤掉包含指定运算符的行,构造 alpha_result,并按 sharpe 值从小到大排序。
+        筛选符合 fitness 和 sharpe 条件的 alpha, 过滤掉包含指定运算符的行, 构造 alpha_result, 并按 fitness 绝对值从小到大排序。
+        此版本适配从API直接获取的DataFrame，其中嵌套字段已经是dict或list，无需ast.literal_eval。
 
         参数:
             df (pd.DataFrame): 包含 alpha 数据的 DataFrame。
             min_fitness (float): 最小 fitness 阈值。
             min_sharpe (float): 最小 sharpe 阈值。
-            exclude_operators (List[str], optional): 需要过滤的运算符列表，例如 ['trade_when', 'other_operator']。
+            exclude_operators (List[str], optional): 需要过滤的运算符列表。
 
         返回:
-            List[Dict]: 筛选后的 alpha 元数据列表，每个字典包含 id、settings 和 sharpe,按 sharpe 排序。
+            List[Dict]: 筛选后的 alpha 元数据列表。
         """
-        # 如果 exclude_operators 为空，则初始化为空列表
         exclude_operators = exclude_operators or []
         
         alpha_result = []
         for _, row in df.iterrows():
             try:
-                # 解析 regular 列（Python 字典字符串）
-                regular_str = row['regular']
-                try:
-                    regular_data = ast.literal_eval(regular_str)
-                except (SyntaxError, ValueError) as e:
-                    self.logger.warning(f"Failed to parse alpha {row['id']} regular field: {e}, raw data: {regular_str[:100]}...")
+                row_id = row.get('id', 'N/A')
+
+                # 直接访问字典，不再需要 ast.literal_eval
+                regular_data = row.get('regular')
+                if not isinstance(regular_data, dict):
+                    self.logger.warning(f"Field 'regular' for alpha {row_id} is not a dictionary. Skipping.")
                     continue
 
-                # 检查 code 中是否包含需要过滤的运算符
                 code = regular_data.get('code', '')
-                if exclude_operators:  # 只有当 exclude_operators 不为空时才进行检查
-                    if not all(x not in code for x in exclude_operators):
-                        self.logger.info(f"Skipping alpha {row['id']} due to presence of operator '{exclude_operators}' in code")
-                        continue  # 只要发现一个匹配的运算符就跳过
-
-                # 解析 is 列（Python 字典字符串）
-                is_str = row['is']
-                try:
-                    is_data = ast.literal_eval(is_str)
-                except (SyntaxError, ValueError) as e:
-                    self.logger.warning(f"Failed to parse alpha {row['id']} is field: {e}, raw data: {is_str[:100]}...")
+                if exclude_operators and any(x in code for x in exclude_operators):
+                    self.logger.info(f"Skipping alpha {row_id} due to presence of excluded operator in code.")
                     continue
 
-                # 提取 fitness 和 sharpe，处理 None 或无效值
-                try:
-                    fitness = float(is_data.get('fitness', 0))
-                except (TypeError, ValueError) as e:
-                    self.logger.warning(f"Failed to convert fitness for alpha {row['id']}: {e}, raw fitness: {is_data.get('fitness')}")
+                # 直接访问字典
+                is_data = row.get('is')
+                if not isinstance(is_data, dict):
+                    self.logger.warning(f"Field 'is' for alpha {row_id} is not a dictionary. Skipping.")
                     continue
 
-                try:
-                    sharpe = float(is_data.get('sharpe', 0))
-                except (TypeError, ValueError) as e:
-                    self.logger.warning(f"Failed to convert sharpe for alpha {row['id']}: {e}, raw sharpe: {is_data.get('sharpe')}")
-                    continue
+                fitness = float(is_data.get('fitness', 0.0))
+                sharpe = float(is_data.get('sharpe', 0.0))
 
-                # 检查 fitness 和 sharpe 是否满足条件
-                if (fitness >= min_fitness and sharpe >= min_sharpe) or (fitness <= min_fitness * -1.0 and sharpe <= min_sharpe * -1.0):
-                    # 解析 settings 列（Python 字典字符串）
-                    settings_str = row['settings']
-                    try:
-                        settings = ast.literal_eval(settings_str)
-                    except (SyntaxError, ValueError) as e:
-                        self.logger.warning(f"Failed to parse alpha {row['id']} settings: {e}, raw data: {settings_str[:100]}...")
-                        continue
+                if (fitness >= min_fitness and sharpe >= min_sharpe) or \
+                   (fitness <= -min_fitness and sharpe <= -min_sharpe):
                     
-                    # 解析 classifications 列（Python 列表字符串）
-                    classifications_str = row['classifications']
-                    try:
-                        classifications = ast.literal_eval(classifications_str) if classifications_str and classifications_str != '[]' else []
-                        self.logger.debug(f"get alpha {row['id']} classifications raw data: {classifications}...")
-                    except (SyntaxError, ValueError) as e:
-                        self.logger.warning(f"Failed to parse alpha {row['id']} classifications: {e}, raw data: {classifications_str[:100]}...")
+                    settings = row.get('settings')
+                    if not isinstance(settings, dict):
+                        self.logger.warning(f"Field 'settings' for alpha {row_id} is not a dictionary. Skipping.")
+                        continue
+                        
+                    classifications = row.get('classifications', [])
+                    if not isinstance(classifications, list):
+                        self.logger.warning(f"Field 'classifications' for alpha {row_id} is not a list. Treating as empty.")
                         classifications = []
 
                     alpha_result.append({
-                        'id': row['id'],
+                        'id': row_id,
                         'settings': settings,
                         'sharpe': sharpe,
                         'fitness': fitness,
-                        'abs_fitness': abs(fitness),  # 添加fitness绝对值字段用于排序
-                        'classifications': classifications  # 添加解析后的classifications字段
+                        'abs_fitness': abs(fitness),
+                        'classifications': classifications
                     })
 
+            except (TypeError, ValueError) as e:
+                self.logger.warning(f"Failed to process alpha {row.get('id', 'N/A')} due to data type error: {e}")
             except Exception as e:
-                self.logger.warning(f"Failed to process alpha {row['id']}: {e}, raw is data: {is_str[:100]}...")
-                continue
+                self.logger.error(f"An unexpected error occurred while processing alpha {row.get('id', 'N/A')}: {e}", exc_info=True)
 
         # 按 fitness 绝对值从小到大排序
         alpha_result.sort(key=lambda x: x['abs_fitness'])
@@ -200,40 +271,26 @@ class AlphaFilter:
         single_data_set_items = []
         regular_items = []
         for item in alpha_result:
-            # 使用item中的classifications字段检查标志
-            if any(cls.get('id') == 'DATA_USAGE:SINGLE_DATA_SET' for cls in item['classifications']):
+            if any(cls.get('id') == 'DATA_USAGE:SINGLE_DATA_SET' for cls in item.get('classifications', [])):
                 single_data_set_items.append(item)
             else:
                 regular_items.append(item)
         
-        # 对含标志的item单独排序（按fitness绝对值）
         single_data_set_items.sort(key=lambda x: x['abs_fitness'])
         
         # 合并两部分：常规item在前，标志item在后
         alpha_result = regular_items + single_data_set_items
         
-        # 移除临时添加的 abs_fitness 和 classifications 字段
         for item in alpha_result:
             item.pop('abs_fitness', None)
-            item.pop('classifications', None)  # classifications是临时字段，排序后不再需要
+            # 'classifications' 可能会在下游使用，暂时保留
         
-        # 添加数量统计日志
         self.logger.info(
             f"Alpha separation: total={len(alpha_result)}, "
             f"regular={len(regular_items)}, "
             f"single_dataset={len(single_data_set_items)}"
         )
         
-        # 打印前3个和后3个alpha的详情
-        if len(alpha_result) > 0:
-            self.logger.info("First 3 alphas by fitness:")
-            for alpha in alpha_result[:3]:
-                self.logger.info(f"ID: {alpha['id']}, fitness: {alpha['fitness']}, sharpe: {alpha['sharpe']}")
-            
-            self.logger.info("Last 3 alphas by fitness:") 
-            for alpha in alpha_result[-3:]:
-                self.logger.info(f"ID: {alpha['id']}, fitness: {alpha['fitness']}, sharpe: {alpha['sharpe']}")
-
         self.logger.info(f"Filtered {len(alpha_result)} alphas (fitness >= {min_fitness}, sharpe >= {min_sharpe}), sorted by fitness")
         return alpha_result
 
@@ -382,145 +439,128 @@ class AlphaFilter:
         return filtered_alphas
 
 
-    def save_filtered_alphas(self, filtered_alphas: Dict[str, List[Dict]], original_df: pd.DataFrame) -> None:
+    def save_filtered_alphas(self, filtered_alphas: Dict[str, List[Dict]]) -> None:
         """
-        将筛选后的 alpha 保存到数据库的 alpha_signal_table 表，包含 self_corr 列。
-
-        参数:
-            filtered_alphas (Dict[str, List[Dict]]): 按区域分组的筛选后 alpha 列表。
-            original_df (pd.DataFrame): 原始 alpha 数据 DataFrame,用于保留完整信息。
+        获取筛选后的 alpha 的最新详情，添加 self_corr，并保存到数据库。
+        此版本不再依赖于旧的DataFrame，而是为每个通过筛选的alpha重新获取最新数据。
         """
-        total_inserted = 0
-        for region, alphas in filtered_alphas.items():
-            if not alphas:
-                self.logger.info(f"No filtered alphas for region {region}, skipping save")
-                continue
+        self.logger.info("Starting final save process: fetching latest details for filtered alphas.")
+        records_to_insert = []
+        
+        # 将所有region的alpha收集到一个列表中，方便统一处理
+        all_filtered_alphas = [alpha for alphas in filtered_alphas.values() for alpha in alphas]
+        total_alphas_to_save = len(all_filtered_alphas)
+        
+        self.logger.info(f"Total number of alphas to fetch and save: {total_alphas_to_save}")
 
-            # 提取筛选后 alpha 的 ID 和 self_corr
-            alpha_ids = [alpha['id'] for alpha in alphas]
-            self_corrs = {alpha['id']: alpha['self_corr'] for alpha in alphas}
-
-            # 从原始 DataFrame 中提取对应行
-            region_df = original_df[original_df['id'].isin(alpha_ids)].copy()
-
-            # 添加 self_corr 列并重命名为 selfCorrelation
-            region_df['selfCorrelation'] = region_df['id'].map(self_corrs)
-            self.logger.info(f"Added selfCorrelation column for region {region}, contains {len(region_df)} alphas")
-
-            # 转换为字典列表，准备批量插入
-            data_list = region_df.to_dict('records')
-            self.logger.info(f"Converted {len(data_list)} records to dict format for region {region}")
+        for idx, alpha in enumerate(all_filtered_alphas):
+            alpha_id = alpha['id']
+            self_corr = alpha['self_corr']
+            
+            # 定期重新认证会话
+            if idx > 0 and idx % 50 == 0:
+                self.logger.info(f"Re-authenticating session... (processed {idx}/{total_alphas_to_save})")
+                self.sess = config_manager.get_session()
 
             try:
-                # 批量插入到数据库
-                inserted_count = self.alpha_signal_dao.batch_insert(data_list)
-                total_inserted += inserted_count
-                self.logger.info(f"Inserted {inserted_count} alphas for region {region} into alpha_signal_table")
+                self.logger.debug(f"Fetching latest details for alpha_id: {alpha_id}")
+                brain_api_url = "https://api.worldquantbrain.com"
+                response = self.sess.get(f"{brain_api_url}/alphas/{alpha_id}", timeout=30)
+                response.raise_for_status()
+                alpha_details = response.json()
+
+                if not alpha_details:
+                    self.logger.warning(f"Could not fetch latest details for alpha_id {alpha_id}. Skipping.")
+                    continue
+                
+                # 格式化数据
+                formatted_alpha = self._format_alpha_details(alpha_details)
+                
+                # 添加 selfCorrelation 字段
+                formatted_alpha['selfCorrelation'] = self_corr
+                
+                records_to_insert.append(formatted_alpha)
+                
             except Exception as e:
-                self.logger.error(f"Failed to insert alphas for region {region}: {e}")
-                self.logger.debug(f"Exception details: {traceback.format_exc()}")
+                self.logger.error(f"Failed to fetch or format details for alpha_id {alpha_id}: {e}", exc_info=True)
 
-        self.logger.info(f"Total inserted {total_inserted} filtered alphas into database")
-
-    def process_alphas(self, min_fitness: float = 1.0, min_sharpe: float = 1.0, corr_threshold: float = 0.5) -> None:
-        """
-        执行完整的 alpha 筛选和相关性分析流程。
-
-        参数:
-            min_fitness (float): 最小 fitness 阈值，默认为 1.0。
-            min_sharpe (float): 最小 sharpe 阈值，默认为 1.0。
-            corr_threshold (float): 最大相关性阈值，默认为 0.5。
-        """
-        # 加载 alpha 数据
-        df = self.load_alpha_data()
-
-        # 筛选符合 fitness 和 sharpe 条件的 alpha
-        alpha_result = self.filter_alphas(df, min_fitness, min_sharpe, ['trade_when'])
-
-        # 检查所有region是否已存在数据库中
-        regions = {alpha['settings']['region'] for alpha in alpha_result}
-        self.logger.info(f"Found regions in alpha_result: {regions}")
-        all_region_exist = True
-        for region in regions:
-            if not self.alpha_signal_dao.region_and_datetime_exists(region, self.date_str):
-                all_region_exist = False
-                break
-
-        if all_region_exist:
-            self.logger.info(f"All region already exist for date {self.date_str}, skipping processing")
+        if not records_to_insert:
+            self.logger.warning("No records were successfully prepared for database insertion.")
             return
 
-        # 使用筛选后的 alpha 生成比较数据
-        self.generate_comparison_data(alpha_result)
-
-        # 计算相关性并筛选
-        filtered_alphas = self.calculate_correlations(alpha_result, corr_threshold)
-
-        # 保存结果
-        self.save_filtered_alphas(filtered_alphas, df)
-
-    def start_monitoring(self, interval_minutes: int = 90,
-                         min_fitness: float = 0.7,
-                         min_sharpe: float = 1.2,
-                         corr_threshold: float = 0.7):
+        self.logger.info(f"Preparing to insert {len(records_to_insert)} records into the database.")
+        try:
+            inserted_count = self.alpha_signal_dao.batch_insert(records_to_insert)
+            self.logger.info(f"Successfully inserted {inserted_count} alphas into alpha_signal_table.")
+        except Exception as e:
+            self.logger.error(f"Database batch insert failed: {e}", exc_info=True)
+            # 根据需要，这里可以增加失败重试或将失败记录写入文件的逻辑
+            
+    def _format_alpha_details(self, alpha_details: Dict) -> Dict:
         """
-        运行监控循环，该循环定期检查新数据。
-        此方法旨在由执行器在单独的线程中运行。
+        将从API获取的alpha详细信息格式化为数据库接受的格式。
+        参考自alpha_poller.py中的_format_alpha_details方法。
         """
-        self.logger.info(f"Started monitoring (checking every {interval_minutes} minutes)")
-        self._stop_event.clear()
-
-        while not self._stop_event.is_set():
-            try:
-                # Get max datetime from database
-                max_datetime = self.simulated_alphas_dao.get_max_datetime()
-
-                if max_datetime and max_datetime > self.date_str:
-                    self.logger.info(f"New data available (max datetime: {max_datetime}), current date: {self.date_str}")
-                    self.logger.info(f"Starting processing for date {self.date_str}...")
-                    self.process_alphas(min_fitness, min_sharpe, corr_threshold)
-                    self._advance_date()
-                else:
-                    self.logger.debug(f"No new data found for date {self.date_str}, max datetime: {max_datetime}")
-            except Exception as e:
-                self.logger.error(f"Error during monitoring: {e}")
-                self.logger.debug(f"Exception details: {traceback.format_exc()}")
-
-            # Wait for interval or until stopped
-            self.logger.info(f"No new alpha to filter. Sleeping for {interval_minutes / 60} hour.")
-            self._stop_event.wait(timeout=interval_minutes * 60)
+        date_created = alpha_details.get("dateCreated")
+        datetime_str = date_created.split("T")[0].replace("-", "") if date_created else None
         
-        self.logger.info("Monitoring loop has stopped.")
+        settings = alpha_details.get("settings", {})
+        region = settings.get("region")
+
+        favorite = 1 if alpha_details.get("favorite", False) else 0
+        hidden = 1 if alpha_details.get("hidden", False) else 0
+
+        grade = alpha_details.get("grade")
+        if grade is not None:
+            try:
+                grade = round(float(grade), 2)
+            except (ValueError, TypeError):
+                grade = None
+                        
+        return {
+            "id": alpha_details.get("id"),
+            "type": alpha_details.get("type"),
+            "author": alpha_details.get("author"),
+            "settings": str(settings),
+            "regular": str(alpha_details.get("regular", {})),
+            "dateCreated": self.to_mysql_datetime(date_created),
+            "dateSubmitted": self.to_mysql_datetime(alpha_details.get("dateSubmitted")),
+            "dateModified": self.to_mysql_datetime(alpha_details.get("dateModified")),
+            "name": alpha_details.get("name"),
+            "favorite": favorite,
+            "hidden": hidden,
+            "color": alpha_details.get("color"),
+            "category": alpha_details.get("category"),
+            "tags": str(alpha_details.get("tags", [])),
+            "classifications": str(alpha_details.get("classifications", [])),
+            "grade": grade,
+            "stage": alpha_details.get("stage"),
+            "status": alpha_details.get("status"),
+            "is": str(alpha_details.get("is", {})),
+            "os": alpha_details.get("os"),
+            "train": alpha_details.get("train"),
+            "test": alpha_details.get("test"),
+            "prod": alpha_details.get("prod"),
+            "competitions": alpha_details.get("competitions"),
+            "themes": str(alpha_details.get("themes", [])),
+            "pyramids": str(alpha_details.get("pyramids", [])),
+            "pyramidThemes": str(alpha_details.get("pyramidThemes", [])),
+            "team": alpha_details.get("team"),
+            "datetime": datetime_str,
+            "region": region
+        }
+
+    def to_mysql_datetime(self, dt_str: Optional[str]) -> Optional[str]:
+        """将ISO格式的日期字符串转换为MySQL的DATETIME格式。"""
+        if not dt_str:
+            return None
+        try:
+            if dt_str.endswith('Z'):
+                dt_str = dt_str[:-1] + '+00:00'
+            dt = datetime.fromisoformat(dt_str)
+            return dt.strftime('%Y-%m-%d %H:%M:%S')
+        except Exception as e:
+            self.logger.error(f"Failed to parse datetime: {dt_str}, error: {e}")
+            return None
 
 
-    def stop_monitoring(self):
-        """通知监控循环停止"""
-        self.logger.info("Signaling monitoring loop to stop...")
-        self._stop_event.set()
-
-    def _advance_date(self):
-        """将日期前进一天"""
-        current_date = datetime.strptime(self.date_str, "%Y%m%d")
-        new_date = current_date + timedelta(days=1)
-        self.date_str = new_date.strftime("%Y%m%d")
-        self.logger.info(f"Advanced processing date to {self.date_str}")
-
-"""
-def main():
-    # 配置参数
-    min_fitness = 0.7
-    min_sharpe = 1.2
-    corr_threshold = 0.7
-
-    # 初始化并运行
-    filter = AlphaFilter(username, password)
-    df = filter.load_alpha_data()
-
-        # 筛选符合 fitness 和 sharpe 条件的 alpha
-    alpha_result = filter.filter_alphas(df, min_fitness, min_sharpe, ['trade_when'])
-
-    #filter.process_alphas(min_fitness, min_sharpe, corr_threshold)
-
-if __name__ == "__main__":
-    main()
-"""

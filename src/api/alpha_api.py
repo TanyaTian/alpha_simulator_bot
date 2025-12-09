@@ -8,6 +8,8 @@ from dao import AlphaSignalDAO
 from config_manager import config_manager
 from dao import SimulatedAlphasDAO
 from logger import Logger
+from ..alpha_filter import AlphaFilter
+import traceback
 
 alpha_api_blueprint = Blueprint('alpha_api', __name__)
 logger = Logger()
@@ -248,3 +250,71 @@ def _to_mysql_datetime(dt_str):
     except Exception as e:
         logger.error(f"Failed to parse datetime: {dt_str}, error: {e}")
         return None
+
+@alpha_api_blueprint.route('/filter/run', methods=['POST'])
+def run_alpha_filter():
+    """
+    通过API触发指定日期的Alpha筛选任务。
+
+    Request Body (JSON):
+    {
+        "date": "YYYYMMDD",
+        "min_fitness": 0.7,
+        "min_sharpe": 1.2,
+        "corr_threshold": 0.7
+    }
+
+    Example:
+    curl -X POST http://localhost:5001/filter/run \
+         -H "Content-Type: application/json" \
+         -d '{"date": "20251208", "min_fitness": 0.7, "min_sharpe": 1.2, "corr_threshold": 0.7}'
+    """
+    logger.info("Received request to run alpha filter.")
+    
+    data = request.get_json()
+    if not data:
+        logger.error("Request body is empty or not JSON.")
+        return jsonify({"status": "error", "message": "Request body must be a valid JSON."}), 400
+
+    # --- 参数校验 ---
+    date_str = data.get('date')
+    if not date_str or not (isinstance(date_str, str) and len(date_str) == 8 and date_str.isdigit()):
+        logger.error(f"Invalid or missing 'date' parameter: {date_str}")
+        return jsonify({"status": "error", "message": "Parameter 'date' is required and must be in YYYYMMDD format."}), 400
+        
+    try:
+        min_fitness = float(data.get('min_fitness', 0.7))
+        min_sharpe = float(data.get('min_sharpe', 1.2))
+        corr_threshold = float(data.get('corr_threshold', 0.7))
+    except (ValueError, TypeError):
+        logger.error("Invalid numeric parameters.")
+        return jsonify({"status": "error", "message": "min_fitness, min_sharpe, and corr_threshold must be valid numbers."}), 400
+
+    try:
+        # --- 核心逻辑 ---
+        # 1. 实例化 AlphaFilter 服务
+        alpha_filter_service = AlphaFilter()
+        
+        # 2. 调用核心处理方法
+        # 警告: 这是一个长耗时任务。在生产环境中，直接在请求中同步执行
+        # 极有可能导致客户端请求超时。强烈建议使用后台任务队列（如 Celery）。
+        # 对于当前场景，我们暂时同步执行。
+        alpha_filter_service.process_alphas(
+            date_str=date_str,
+            min_fitness=min_fitness,
+            min_sharpe=min_sharpe,
+            corr_threshold=corr_threshold
+        )
+        
+        # 3. 成功返回
+        success_message = f"Alpha filtering task for date {date_str} completed successfully."
+        logger.info(success_message)
+        return jsonify({"status": "success", "message": success_message}), 200
+
+    except Exception as e:
+        # 捕获来自 process_alphas 的所有未预期异常
+        error_message = f"An unexpected error occurred during alpha filtering for date {date_str}."
+        logger.error(error_message)
+        logger.error(traceback.format_exc()) #在服务器日志中打印完整的错误堆栈
+        
+        return jsonify({"status": "error", "message": error_message, "detail": str(e)}), 500

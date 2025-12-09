@@ -11,7 +11,7 @@ from alpha_simulator import AlphaSimulator
 #from process_simulated_alphas import ProcessSimulatedAlphas
 from logger import Logger
 from signal_manager import SignalManager
-from alpha_filter import AlphaFilter
+
 from alpha_poller import AlphaPoller
 from config_manager import config_manager
 from api.server import run_server
@@ -102,18 +102,7 @@ async def main():
         return
     
     
-    # 2. 初始化并运行AlphaFilter
-    alpha_filter = AlphaFilter(signal_manager=signal_manager)
-    loop.run_in_executor(
-        executor, 
-        lambda: alpha_filter.start_monitoring(
-            interval_minutes=180,
-            min_fitness=0.7,
-            min_sharpe=1.2,
-            corr_threshold=0.75
-        )
-    )
-    logger.info("AlphaFilter监控已在工作线程中启动。")
+
     
     # --- 运行异步组件 ---
     # 3. 初始化AlphaPoller并启动异步轮询

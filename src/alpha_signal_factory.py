@@ -459,6 +459,7 @@ class AlphaSignalFactory:
         glb_atom_group = asi_atom_group.copy()
         
         chn_atom_group = ["market", "sector", "industry", "subindustry", "exchange"]
+        ind_atom_group = ["market", "sector", "industry", "subindustry", "exchange"]
         
         # 根据region选择对应的group集合（直接匹配大写）
         if region == 'USA':
@@ -471,8 +472,10 @@ class AlphaSignalFactory:
             groups = glb_atom_group
         elif region == 'CHN':
             groups = chn_atom_group
+        elif region == 'IND':
+            groups = ind_atom_group
         else:
-            raise ValueError(f"无效的region: {region}，必须是'USA', 'ASI', 'EUR', 'GLB'或'CHN'（大写）")
+            raise ValueError(f"无效的region: {region}，必须是'USA', 'ASI', 'EUR', 'GLB'或'CHN'（大写）, 'IND'")
         
         # 多行处理模式
         if multi_line:
