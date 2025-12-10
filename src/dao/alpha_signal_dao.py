@@ -22,33 +22,14 @@ class AlphaSignalDAO:
         total = 0
         success = True
 
-        if not data_list:
-            self.logger.warning("Batch insert skipped: data_list is empty.")
-            return 0
-
-        # Get the key order from the first item
-        ordered_keys = list(data_list[0].keys())
-
         for i in range(0, len(data_list), chunk_size):
             chunk = data_list[i:i + chunk_size]
-            
-            # Ensure all dicts in the chunk have the same key order
-            ordered_chunk = []
-            for d in chunk:
-                # Create a new dictionary with keys in the correct order
-                ordered_dict = {key: d.get(key) for key in ordered_keys}
-                ordered_chunk.append(ordered_dict)
-
-            if not ordered_chunk:
-                continue
-
-            affected = self.db.batch_insert(self.TABLE_NAME, ordered_chunk, on_duplicate_update=True)
+            affected = self.db.batch_insert(self.TABLE_NAME, chunk, on_duplicate_update=True)
             if affected > 0:
                 total += affected
                 self.logger.debug(f"Inserted chunk {i}-{i+chunk_size}, affected: {affected}")
             else:
-                # Log the problematic chunk for debugging
-                self.logger.error(f"Failed to insert chunk {i}-{i+chunk_size}. Chunk head: {ordered_chunk[0] if ordered_chunk else 'N/A'}")
+                self.logger.error(f"Failed to insert chunk {i}-{i+chunk_size}")
                 success = False
 
         self.logger.debug(f"Total batch insert affected: {total}")
