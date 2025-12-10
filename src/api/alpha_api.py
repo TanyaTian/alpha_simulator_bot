@@ -1,6 +1,7 @@
 # api/alpha_api.py
 
 from flask import Blueprint, request, jsonify
+import threading
 from data_exploration_service import DataExplorationService
 # 直接从 dao 包导入实例化好的对象
 from dao import DataExplorationDAO
@@ -251,10 +252,32 @@ def _to_mysql_datetime(dt_str):
         logger.error(f"Failed to parse datetime: {dt_str}, error: {e}")
         return None
 
+def _run_process_alphas_worker(date_str, min_fitness, min_sharpe, corr_threshold):
+    """
+    Worker function to run the long-running process_alphas task.
+    Includes its own error handling and logging since it runs in a separate thread.
+    """
+    try:
+        logger.info(f"Background thread started for alpha filtering on date: {date_str}.")
+        # Each thread needs its own service instance to ensure thread safety,
+        # especially regarding session objects or shared state.
+        alpha_filter_service = AlphaFilter()
+        alpha_filter_service.process_alphas(
+            date_str=date_str,
+            min_fitness=min_fitness,
+            min_sharpe=min_sharpe,
+            corr_threshold=corr_threshold
+        )
+        logger.info(f"Background alpha filtering task for date {date_str} completed successfully.")
+    except Exception as e:
+        error_message = f"An unexpected error occurred in the background alpha filtering thread for date {date_str}."
+        logger.error(error_message)
+        logger.error(traceback.format_exc()) # Log the full traceback
+
 @alpha_api_blueprint.route('/filter/run', methods=['POST'])
 def run_alpha_filter():
     """
-    通过API触发指定日期的Alpha筛选任务。
+    Triggers the Alpha filtering task for a specific date in a background thread.
 
     Request Body (JSON):
     {
@@ -276,7 +299,7 @@ def run_alpha_filter():
         logger.error("Request body is empty or not JSON.")
         return jsonify({"status": "error", "message": "Request body must be a valid JSON."}), 400
 
-    # --- 参数校验 ---
+    # --- Parameter validation ---
     date_str = data.get('date')
     if not date_str or not (isinstance(date_str, str) and len(date_str) == 8 and date_str.isdigit()):
         logger.error(f"Invalid or missing 'date' parameter: {date_str}")
@@ -290,31 +313,16 @@ def run_alpha_filter():
         logger.error("Invalid numeric parameters.")
         return jsonify({"status": "error", "message": "min_fitness, min_sharpe, and corr_threshold must be valid numbers."}), 400
 
-    try:
-        # --- 核心逻辑 ---
-        # 1. 实例化 AlphaFilter 服务
-        alpha_filter_service = AlphaFilter()
-        
-        # 2. 调用核心处理方法
-        # 警告: 这是一个长耗时任务。在生产环境中，直接在请求中同步执行
-        # 极有可能导致客户端请求超时。强烈建议使用后台任务队列（如 Celery）。
-        # 对于当前场景，我们暂时同步执行。
-        alpha_filter_service.process_alphas(
-            date_str=date_str,
-            min_fitness=min_fitness,
-            min_sharpe=min_sharpe,
-            corr_threshold=corr_threshold
-        )
-        
-        # 3. 成功返回
-        success_message = f"Alpha filtering task for date {date_str} completed successfully."
-        logger.info(success_message)
-        return jsonify({"status": "success", "message": success_message}), 200
+    # --- Core logic ---
+    # Start the long-running task in a background thread
+    background_task = threading.Thread(
+        target=_run_process_alphas_worker,
+        args=(date_str, min_fitness, min_sharpe, corr_threshold)
+    )
+    background_task.start()
+    
+    # Immediately return a response
+    success_message = f"Alpha filtering task for date {date_str} has been started in the background."
+    logger.info(success_message)
+    return jsonify({"status": "success", "message": success_message}), 202
 
-    except Exception as e:
-        # 捕获来自 process_alphas 的所有未预期异常
-        error_message = f"An unexpected error occurred during alpha filtering for date {date_str}."
-        logger.error(error_message)
-        logger.error(traceback.format_exc()) #在服务器日志中打印完整的错误堆栈
-        
-        return jsonify({"status": "error", "message": error_message, "detail": str(e)}), 500
