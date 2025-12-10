@@ -8,7 +8,7 @@ from dao import AlphaSignalDAO
 from config_manager import config_manager
 from dao import SimulatedAlphasDAO
 from logger import Logger
-from ..alpha_filter import AlphaFilter
+from alpha_filter import AlphaFilter
 import traceback
 
 alpha_api_blueprint = Blueprint('alpha_api', __name__)
