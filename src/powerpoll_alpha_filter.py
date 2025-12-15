@@ -138,7 +138,7 @@ class PowerPollAlphaFilter:
         return all_alphas
     
     def generate_ppac_gold_bags(self, date, keywords_to_exclude, os_alpha_ids, os_alpha_rets):
-        regions = ['USA', 'CHN', 'GLB', 'EUR', 'ASI']
+        regions = ['USA', 'CHN', 'GLB', 'EUR', 'ASI', 'IND']
         stone_bag_atom = {}
         stone_bag_hp = {}
         ppa_tracker_atom_all = []
@@ -277,7 +277,7 @@ def main():
     logger = Logger()
     logger.info("Starting PowerPoll Alpha Filter")
 
-    datetimes = ['20251128']  # 示例日期列表
+    datetimes = ['20251210']  # 示例日期列表
     
     try:
         # 初始化并运行
