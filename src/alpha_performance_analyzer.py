@@ -99,7 +99,7 @@ def analyze_pyramid_distribution(alphas, title):
     plt.grid(axis='y', linestyle='--')
     plt.tight_layout() # Adjust layout to make room for labels
 
-    output_dir = 'D:\\repos\\alpha_simulator_bot\\output\\performance_analyzer\\'
+    output_dir = 'output/performance_analyzer'
     # Ensure output directory exists
     import os
     os.makedirs(output_dir, exist_ok=True)
@@ -173,7 +173,7 @@ def analyze_rolling_metrics(alphas, start_date_str):
         plt.gcf().autofmt_xdate()
         
         plt.tight_layout()
-        output_dir = 'D:\\repos\\alpha_simulator_bot\\output\\performance_analyzer\\'
+        output_dir = 'output/performance_analyzer'
         # Ensure output directory exists
         import os
         os.makedirs(output_dir, exist_ok=True)
@@ -237,8 +237,8 @@ def main():
 
     # --- New analysis for specified period ---
     print("\n--- Analysis for specified period (2025-09-01 to 2025-09-30) ---")
-    period_start_date_str = "2025-09-01"
-    period_end_date_str = "2025-11-30"
+    period_start_date_str = "2025-10-01"
+    period_end_date_str = "2025-12-31"
 
     period_start_dt = pd.to_datetime(period_start_date_str).tz_localize('UTC')
     period_end_dt = pd.to_datetime(period_end_date_str).tz_localize('UTC') + timedelta(days=1)
@@ -266,10 +266,10 @@ def main():
         else:
             print("No Fitness data available for the period.")
 
-        analyze_pyramid_distribution(alphas_in_period, "2025-09-01_to_2025-11-30")
+        analyze_pyramid_distribution(alphas_in_period, "2025-10-01_to_2025-12-31")
     
     print("\nAnalysis complete.")
 
 if __name__ == "__main__":
     main()
-#python src\alpha_performance_analyzer.py
+#python src/alpha_performance_analyzer.py

@@ -258,6 +258,11 @@ class SASimulator:
         self.logger.info("SA Simulator loop started.")
         while self.running:
             try:
+                if self.concurrent_simulations == 0:
+                    self.logger.info("concurrent_simulations is 0. Pausing for 1 hour.")
+                    time.sleep(3600)
+                    continue
+
                 # 1. 在每次循环开始时，使用当前内存中的 region 配置
                 current_region = self.region
                 self.logger.info(f"Starting new loop iteration, using region: {current_region}")
