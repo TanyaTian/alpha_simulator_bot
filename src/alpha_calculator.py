@@ -66,10 +66,44 @@ def _fetch_alphas_from_api(date_str: str, logger, per_page: int = 100) -> pd.Dat
 
         logger.info(f"[AlphaProcessor] Fetching alphas from URL (offset: {offset})")
 
-        try:
-            response = sess.get(url, timeout=30)
-            response.raise_for_status()
-
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = sess.get(url, timeout=30)
+                response.raise_for_status()
+                # 如果请求成功，跳出重试循环
+                break
+            except (requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+                logger.error(f"[AlphaProcessor] Network/SSL error on attempt {attempt + 1}/{max_retries}: {e}")
+                if attempt < max_retries - 1:
+                    logger.info("[AlphaProcessor] Sleeping for 5 minutes before retrying...")
+                    time.sleep(300)
+                    logger.info("[AlphaProcessor] Forcing session renewal...")
+                    if config_manager.renew_session():
+                        sess = config_manager.get_session()
+                        logger.info("[AlphaProcessor] Successfully renewed session. Retrying...")
+                    else:
+                        logger.error("[AlphaProcessor] Failed to renew session. Aborting retries for this page.")
+                        # 如果刷新session失败，直接抛出异常，不再重试
+                        raise e
+                else:
+                    logger.error("[AlphaProcessor] Max retries exceeded. Failed to fetch from API after multiple attempts.")
+                    # 达到最大重试次数，重新引发最终的异常
+                    raise e
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 404:
+                    logger.info(
+                        f"[AlphaProcessor] API returned 404 for date {date_str}, which might be expected if no alphas were created on a given page.")
+                    # 404 表示当前分页没有数据，这不是一个需要重试的错误，直接跳出循环
+                    return pd.DataFrame()  # 返回一个空的DataFrame
+                logger.error(f"[AlphaProcessor] HTTP error while fetching data: {e}")
+                raise
+            except Exception as e:
+                logger.error(f"[AlphaProcessor] An unexpected error occurred while fetching data from API: {e}")
+                logger.error("[AlphaProcessor] Stopping pagination due to error.")
+                raise
+        else:
+            # `for`循环正常结束（即`break`被执行），处理响应
             data = response.json()
             alphas_page = data.get("results", [])
 
@@ -81,18 +115,6 @@ def _fetch_alphas_from_api(date_str: str, logger, per_page: int = 100) -> pd.Dat
             all_alphas.extend(alphas_page)
 
             offset += per_page
-
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 404:
-                logger.info(
-                    f"[AlphaProcessor] API returned 404 for date {date_str}, which might be expected if no alphas were created on a given page.")
-                break  # 404 意味着没有数据，分页结束
-            logger.error(f"[AlphaProcessor] HTTP error while fetching data: {e}")
-            raise
-        except Exception as e:
-            logger.error(f"[AlphaProcessor] An unexpected error occurred while fetching data from API: {e}")
-            logger.error("[AlphaProcessor] Stopping pagination due to error.")
-            raise
 
     logger.info(f"[AlphaProcessor] Total alphas fetched from API for {date_str}: {len(all_alphas)}")
     return pd.DataFrame(all_alphas)
