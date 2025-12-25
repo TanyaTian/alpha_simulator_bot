@@ -67,6 +67,8 @@ def _fetch_alphas_from_api(date_str: str, logger, per_page: int = 100) -> pd.Dat
         logger.info(f"[AlphaProcessor] Fetching alphas from URL (offset: {offset})")
 
         max_retries = 3
+        response = None
+        
         for attempt in range(max_retries):
             try:
                 response = sess.get(url, timeout=30)
@@ -102,19 +104,36 @@ def _fetch_alphas_from_api(date_str: str, logger, per_page: int = 100) -> pd.Dat
                 logger.error(f"[AlphaProcessor] An unexpected error occurred while fetching data from API: {e}")
                 logger.error("[AlphaProcessor] Stopping pagination due to error.")
                 raise
-        else:
-            # `for`循环正常结束（即`break`被执行），处理响应
+        
+        # 如果所有重试都失败，上面的异常会被抛出，不会执行到这里
+        # 所以如果执行到这里，说明请求成功
+        try:
             data = response.json()
             alphas_page = data.get("results", [])
+            
+            # 确保 alphas_page 是一个列表
+            if not isinstance(alphas_page, list):
+                logger.error(f"[AlphaProcessor] Unexpected response format: 'results' is not a list. Response: {data}")
+                raise ValueError("API response format error: 'results' is not a list")
+                
+        except (ValueError, AttributeError, KeyError) as e:
+            logger.error(f"[AlphaProcessor] Failed to parse API response: {e}")
+            logger.error(f"[AlphaProcessor] Response content: {response.text[:500] if response else 'No response'}")
+            raise
 
-            if not alphas_page:
-                logger.info("[AlphaProcessor] No more alphas found on this page. Pagination complete.")
-                break
+        if not alphas_page:
+            logger.info("[AlphaProcessor] No more alphas found on this page. Pagination complete.")
+            break
 
-            logger.info(f"[AlphaProcessor] Successfully fetched {len(alphas_page)} alphas from offset {offset}.")
-            all_alphas.extend(alphas_page)
+        logger.info(f"[AlphaProcessor] Successfully fetched {len(alphas_page)} alphas from offset {offset}.")
+        all_alphas.extend(alphas_page)
 
-            offset += per_page
+        offset += per_page
+        
+        # 安全措施：如果 offset 增长过大，防止可能的无限循环
+        if offset > 10000:  # 假设最大 100 页 * 100 条/页
+            logger.warning(f"[AlphaProcessor] Offset exceeded safe limit ({offset}), stopping pagination to prevent infinite loop.")
+            break
 
     logger.info(f"[AlphaProcessor] Total alphas fetched from API for {date_str}: {len(all_alphas)}")
     return pd.DataFrame(all_alphas)
