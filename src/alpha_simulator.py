@@ -308,11 +308,27 @@ class AlphaSimulator:
             for record in db_records:
                 self.logger.debug(f"Processing DB record: {record['id']}")
                 settings = record.get('settings')
+                raw_settings_for_log = settings # Keep a copy for logging
+                
                 if isinstance(settings, str):
                     try:
-                        settings = ast.literal_eval(settings)
-                    except:
-                        settings = {}
+                        # Try json.loads first as it's more common for stored JSON
+                        settings = json.loads(settings)
+                    except json.JSONDecodeError:
+                        try:
+                            # Fallback to ast.literal_eval if it's a Python literal string
+                            settings = ast.literal_eval(settings)
+                        except Exception as e:
+                            self.logger.error(f"❌ Failed to parse settings for record {record['id']}. "
+                                             f"Value: {raw_settings_for_log}, Type: {type(raw_settings_for_log)}, Error: {e}")
+                            settings = {}
+                elif settings is None:
+                    self.logger.warning(f"⚠️ Settings is None for record {record['id']}")
+                    settings = {}
+                elif not isinstance(settings, dict):
+                    self.logger.warning(f"⚠️ Settings is neither string nor dict for record {record['id']}. "
+                                       f"Type: {type(settings)}, Value: {settings}")
+                    settings = {}
                 
                 alpha_item = {
                     'type': record.get('type', 'REGULAR'),

@@ -206,7 +206,7 @@ if __name__ == '__main__':
 
 # Single priority
 #python src/import_alpha_csv.py path/to/alphas.csv --priority 0
-#python src/import_alpha_csv.py /Users/tianyuan/repos/alpha_simulator_bot/output/simulatable_alphas_HKG_TOP800_1_other432.json --priority 2
+#python src/import_alpha_csv.py /Users/tianyuan/repos/alpha_simulator_bot/output/simulatable_alphas_HKG_TOP800_1_fundamental28.json --priority 2
 
 # Priority range
 #python src\import_alpha_csv.py D:\repos\consultant\consultant\output\ind_delay_cap_alphas.csv --priority 2-11
