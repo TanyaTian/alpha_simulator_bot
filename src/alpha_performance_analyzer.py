@@ -202,7 +202,7 @@ def main():
     sess = config_manager.get_session()
 
     all_alphas = []
-    for region in ['USA', 'ASI', 'EUR', 'GLB']:
+    for region in ['USA', 'ASI', 'EUR', 'GLB', 'IND']:
         all_alphas.extend(get_submit_alphas(sess, fetch_start_date, end_date_str, region=region))
 
     if not all_alphas:
@@ -236,9 +236,9 @@ def main():
     
 
     # --- New analysis for specified period ---
-    print("\n--- Analysis for specified period (2025-09-01 to 2025-09-30) ---")
-    period_start_date_str = "2025-10-01"
-    period_end_date_str = "2025-12-31"
+    print("\n--- Analysis for specified period (2025-11-01 to 2026-01-31) ---")
+    period_start_date_str = "2025-11-01"
+    period_end_date_str = "2026-01-31"
 
     period_start_dt = pd.to_datetime(period_start_date_str).tz_localize('UTC')
     period_end_dt = pd.to_datetime(period_end_date_str).tz_localize('UTC') + timedelta(days=1)
@@ -266,7 +266,7 @@ def main():
         else:
             print("No Fitness data available for the period.")
 
-        analyze_pyramid_distribution(alphas_in_period, "2025-10-01_to_2025-12-31")
+        analyze_pyramid_distribution(alphas_in_period, "2025-11-01_to_2026-01-31")
     
     print("\nAnalysis complete.")
 

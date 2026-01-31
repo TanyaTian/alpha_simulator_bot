@@ -50,7 +50,7 @@ class AlphaFilter:
     def _fetch_alphas_from_api(self, date_str: str, per_page: int = 100) -> pd.DataFrame:
         """
         根据指定日期从API获取原始alpha数据行（自动分页获取所有数据）。
-        该实现参考了 D:\repos\alpha_simulator_bot\src\powerpoll_alpha_filter.py 中的 get_alphas_by_datetime 方法。
+        该实现参考了 D:/repos/alpha_simulator_bot/src/powerpoll_alpha_filter.py 中的 get_alphas_by_datetime 方法。
         
         参数:
             date_str: 日期时间字符串，格式为'%Y%m%d'

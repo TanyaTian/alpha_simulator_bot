@@ -86,7 +86,7 @@ def main():
     # 1. 成为顾问的日期，也是 Alpha 开始计算收益的日期
     start_date_str = "2025-03-27"
     # 2. 您想要操作的目标区域列表
-    target_regions = ["USA", "EUR", "ASI", "GLB"]
+    target_regions = ["USA", "EUR", "ASI", "GLB", "IND"]
     # 3. 用于分配的颜色列表 (None 代表清除颜色)
     colors_to_assign = [None, "RED", "YELLOW", "GREEN", "BLUE", "PURPLE"]
     # 4. 并发修改的线程数

@@ -19,7 +19,7 @@ def get_config():
 def update_config():
     """Update the configuration and notify observers.
 
-    curl -X POST http://localhost:5001/config/update -H "Content-Type: application/json" -d '{"max_concurrent": 8}'
+    curl -X POST http://47.111.116.132:5001/config/update -H "Content-Type: application/json" -d '{"max_concurrent": 8}'
     curl -X POST http://47.111.116.132:5001/config/update -H "Content-Type: application/json" -d '{"sa_simulator_region": "USA"}'
     curl -X POST http://47.111.116.132:5001/config/update -H "Content-Type: application/json" -d '{"sa_simulator_concurrent_simulations": 3}'
     curl -X POST http://47.111.116.132:5001/config/update -H "Content-Type: application/json" -d '{"region_set": ["ASI"]}'

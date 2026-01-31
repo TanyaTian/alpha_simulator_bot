@@ -1,5 +1,6 @@
 import os
 import csv
+import json
 import argparse
 import ast
 import numpy as np
@@ -14,8 +15,8 @@ logger = Logger().logger
 
 def parse_arguments():
     """Parse command line arguments"""
-    parser = argparse.ArgumentParser(description='Import alpha CSV into database')
-    parser.add_argument('csv_file', help='Path to CSV file containing alphas')
+    parser = argparse.ArgumentParser(description='Import alpha CSV or JSON into database')
+    parser.add_argument('file_path', help='Path to CSV or JSON file containing alphas')
     parser.add_argument('--priority', type=str, required=True,
                         help='Priority assignment: single value (0) or range (0-5)')
     return parser.parse_args()
@@ -105,6 +106,27 @@ def read_csv_file(file_path):
     
     return alphas
 
+def read_json_file(file_path):
+    """Read and process JSON file"""
+    if not os.path.exists(file_path):
+        logger.error(f"JSON file not found: {file_path}")
+        return None
+    
+    alphas = []
+    with open(file_path, 'r') as f:
+        data = json.load(f)
+    
+    for region, universes in data.items():
+        for universe, alpha_list in universes.items():
+            for alpha in alpha_list:
+                # Ensure settings is a string for consistency
+                alpha['settings'] = json.dumps(alpha.get('settings', {}))
+                alpha['region'] = region  # Add region to the alpha dict
+                alphas.append(alpha)
+                
+    random.shuffle(alphas)
+    return alphas
+
 def assign_priorities(alphas, priority_levels):
     """Assign priorities to alphas"""
     if len(priority_levels) == 1:
@@ -127,12 +149,20 @@ def main():
     if not priority_levels:
         return
     
-    # Read and validate CSV
-    alphas = read_csv_file(args.csv_file)
+    # Read and validate file based on extension
+    file_path = args.file_path
+    if file_path.endswith('.csv'):
+        alphas = read_csv_file(file_path)
+    elif file_path.endswith('.json'):
+        alphas = read_json_file(file_path)
+    else:
+        logger.error(f"Unsupported file format: {file_path}. Please use .csv or .json")
+        return
+
     if not alphas:
         return
     
-    logger.info(f"Found {len(alphas)} valid alpha records in {args.csv_file}")
+    logger.info(f"Found {len(alphas)} valid alpha records in {file_path}")
     
     # Assign priorities
     priorities = assign_priorities(alphas, priority_levels)
@@ -141,7 +171,12 @@ def main():
     db_records = []
     for idx, (alpha, priority) in enumerate(zip(alphas, priorities), 1):
         try:
-            region = extract_region(alpha['settings'], idx)
+            # For JSON files, region is already in the alpha dictionary
+            if 'region' not in alpha:
+                region = extract_region(alpha['settings'], idx)
+            else:
+                region = alpha['region']
+
             db_records.append({
                 'type': alpha['type'],
                 'settings': alpha['settings'],
@@ -152,7 +187,7 @@ def main():
             })
         except ValueError as e:
             logger.error(f"❌ {str(e)}")
-            logger.error("Import aborted. Please fix the CSV file and try again.")
+            logger.error("Import aborted. Please fix the file and try again.")
             return
     
     # Initialize database and DAO
@@ -171,7 +206,10 @@ if __name__ == '__main__':
 
 # Single priority
 #python src/import_alpha_csv.py path/to/alphas.csv --priority 0
-#python src/import_alpha_csv.py /Users/tianyuan/repos/consultant/consultant/output/ind_if_else_alphas.csv --priority 2
+#python src/import_alpha_csv.py /Users/tianyuan/repos/alpha_simulator_bot/output/simulatable_alphas_HKG_TOP800_1_other432.json --priority 2
 
 # Priority range
 #python src\import_alpha_csv.py D:\repos\consultant\consultant\output\ind_delay_cap_alphas.csv --priority 2-11
+
+# Example for JSON file
+# python src/import_alpha_csv.py /Users/tianyuan/repos/alpha_simulator_bot/output/simulatable_alphas.json --priority 0

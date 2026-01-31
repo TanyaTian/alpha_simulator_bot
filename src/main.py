@@ -12,7 +12,6 @@ from alpha_simulator import AlphaSimulator
 from logger import Logger
 from signal_manager import SignalManager
 
-from alpha_poller import AlphaPoller
 from config_manager import config_manager
 from api.server import run_server
 from alpha_calculator import AlphaCalculator
@@ -100,15 +99,6 @@ async def main():
     except Exception as e:
         logger.error(f"SASimulator 初始化或启动失败: {e}")
         return
-    
-    
-
-    
-    # --- 运行异步组件 ---
-    # 3. 初始化AlphaPoller并启动异步轮询
-    poller = AlphaPoller()
-    polling_task = asyncio.create_task(poller.start_polling_async())
-    logger.info("异步AlphaPoller已启动。")
 
     # 4. 初始化并运行AlphaSimulator (移至此处以确保启动)
     try:
@@ -120,9 +110,10 @@ async def main():
         logger.error(f"AlphaSimulator初始化或启动失败: {e}")
         return # 如果模拟器启动失败，则退出
 
-    # 等待异步的poller任务完成（此任务会无限运行，从而保持主程序存活）
+    # 保持主程序存活
     try:
-        await polling_task
+        while True:
+            await asyncio.sleep(3600)
     except asyncio.CancelledError:
         logger.info("主任务被取消，开始关闭...")
     finally:

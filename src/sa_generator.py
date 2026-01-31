@@ -21,10 +21,11 @@ def generate_sa_combinations(priority: Any = 50, region: str = "USA") -> List[Di
         "EUR": ['MARKET', 'SECTOR', 'INDUSTRY', 'STATISTICAL', 'SUBINDUSTRY', 'CROWDING', 'FAST', 'SLOW', 'REVERSION_AND_MOMENTUM', 'SLOW_AND_FAST'],
         "ASI": ['MARKET', 'SECTOR', 'INDUSTRY', 'STATISTICAL', 'SUBINDUSTRY', 'CROWDING', 'FAST', 'SLOW', 'REVERSION_AND_MOMENTUM', 'SLOW_AND_FAST'],
         "CHN": ['MARKET', 'SECTOR', 'INDUSTRY', 'STATISTICAL', 'SUBINDUSTRY', 'CROWDING', 'FAST', 'SLOW', 'REVERSION_AND_MOMENTUM', 'SLOW_AND_FAST'],
-        "IND": ['MARKET', 'SECTOR', 'INDUSTRY', 'STATISTICAL', 'SUBINDUSTRY', 'CROWDING', 'FAST', 'SLOW', 'REVERSION_AND_MOMENTUM', 'SLOW_AND_FAST']
+        "IND": ['MARKET', 'SECTOR', 'INDUSTRY', 'SUBINDUSTRY', 'CROWDING', 'FAST', 'SLOW', 'REVERSION_AND_MOMENTUM', 'SLOW_AND_FAST']
     }
     datacategories = ["analyst", "broker", "earnings", "fundamental", "imbalance", "insiders", "institutions", "macro", "model", "news", "option", "other", "pv", "risk", "sentiment", "shortinterest", "socialmedia"]
     selections = []
+    
     for color in colors_to_assign:
         selections.append(f"own  && (color != '{color}')&& (prod_correlation <0.6)")
         selections.append(f"own  && (color != '{color}')&& (prod_correlation >0.5)")
@@ -60,6 +61,45 @@ def generate_sa_combinations(priority: Any = 50, region: str = "USA") -> List[Di
             selections.append(f"own && (color != '{color}') && (not(in(datacategories, '{category}')))")
         for neutralization in neutralizations_by_region[region]:
             selections.append(f"own && (color != '{color}') && (neutralization != '{neutralization}')")
+    """
+
+    
+    selections.append(f"own && (prod_correlation <0.6)")
+    selections.append(f"own && (prod_correlation >0.5)")
+    selections.append(f"own")
+    selections.append(f"own && ((long_count > 600 && long_count < 800) || (long_count > 1200 && long_count < 1400))")
+    selections.append(f"own && (turnover > 0.05)")
+    selections.append(f"own && (long_count > 500)")
+    selections.append(f"own && ((turnover > 0.05 && turnover < 0.08) || (turnover > 0.15 && turnover < 0.18)) && (prod_correlation < 0.55)")
+    selections.append(f"own && ((turnover > 0.05 && turnover < 0.08) || (turnover > 0.15 && turnover < 0.18)) && (prod_correlation > 0.45)")
+    selections.append(f"own && ((turnover > 0.05 && turnover < 0.08) || (turnover > 0.15 && turnover < 0.18))")
+    selections.append(f"own && ((long_count > 600 && long_count < 800) || (long_count > 1200 && long_count < 1400)) && (self_correlation < 0.5)")
+    selections.append(f"own && ((long_count > 600 && long_count < 800) || (long_count > 1200 && long_count < 1400)) && (self_correlation > 0.5)")
+    selections.append(f"own && ((long_count > 600 && long_count < 800) || (long_count > 1200 && long_count < 1400))")
+    selections.append(f"own && ((operator_count < 5) || (operator_count > 12)) && (prod_correlation < 0.55)")
+    selections.append(f"own && ((operator_count < 5) || (operator_count > 12)) && (prod_correlation > 0.45)")
+    selections.append(f"own && ((operator_count < 5) || (operator_count > 12))")
+    selections.append(f"own && ((short_count < 800 && short_count > 600) || (short_count > 1300)) && (prod_correlation < 0.55)")
+    selections.append(f"own && ((short_count < 800 && short_count > 600) || (short_count > 1300)) && (prod_correlation > 0.45)")
+    selections.append(f"own && ((short_count < 800 && short_count > 600) || (short_count > 1300))")
+    selections.append(f"own && (turnover < 0.25) && (prod_correlation < 0.6)")
+    selections.append(f"own && (turnover < 0.25) && (prod_correlation > 0.4)")
+    selections.append(f"own && (operator_count < 6) && (prod_correlation < 0.55)")
+    selections.append(f"own && (operator_count < 6) && (prod_correlation > 0.45)")
+    selections.append(f"own && (long_count > 800) && (prod_correlation < 0.6)")
+    selections.append(f"own && (self_correlation < 0.6)")
+    selections.append(f"own && (turnover < 0.25)")
+    selections.append(f"own && (operator_count < 6)")
+    selections.append(f"own && (long_count > 800)")
+    selections.append(f"own && (prod_correlation > 0.4)")
+    selections.append(f"own && (self_correlation > 0.3)")
+    selections.append(f"own && ((self_correlation <= 0.45) * (prod_correlation < 0.55))")
+    for category in datacategories:
+        selections.append(f"own && (not(in(datacategories, '{category}')))")
+    for neutralization in neutralizations_by_region[region]:
+        selections.append(f"own && (neutralization != '{neutralization}')")
+    """
+    
 
     combos = [
         '1',
@@ -92,7 +132,7 @@ def generate_sa_combinations(priority: Any = 50, region: str = "USA") -> List[Di
     product_iter = itertools.product(
         universes[region],
         neutralizations_by_region[region],
-        [45, 65, 80], # selectionLimit
+        [10, 20, 30], # selectionLimit
         ["POSITIVE"], # selectionHandling
         selections,
         combos,
@@ -145,7 +185,7 @@ def main():
     # new_tasks = generate_sa_combinations(priority=1, region="USA")
     
     # 示例2: 将任务随机分配到 1-10 的优先级
-    region = "ASI"
+    region = "IND"
     new_tasks = generate_sa_combinations(priority=(1, 10), region=region)
     
     if new_tasks:

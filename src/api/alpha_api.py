@@ -288,7 +288,7 @@ def run_alpha_filter():
     }
 
     Example:
-    curl -X POST http://47.111.116.132:5001/filter/run  -H "Content-Type: application/json" -d '{"date": "20251209", "min_fitness": 0.8, "min_sharpe": 1.4, "corr_threshold": 0.7}'
+    curl -X POST http://47.111.116.132:5001/filter/run  -H "Content-Type: application/json" -d '{"date": "20260105", "min_fitness": 0.7, "min_sharpe": 1.2, "corr_threshold": 0.7}'
     """
     logger.info("Received request to run alpha filter.")
     
