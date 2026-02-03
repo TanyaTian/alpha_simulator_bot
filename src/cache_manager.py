@@ -59,6 +59,9 @@ class CacheManager:
         # 缓冲待插入 `simulation_tasks_table` 的新任务
         self.new_tasks_buffer: List[Dict[str, Any]] = []
 
+        # 线程锁
+        self.lock = threading.Lock()
+
         self.logger.info(f"CacheManager initialized with on-demand loading. Batch size per region: {self.batch_number_for_every_queue}")
 
     def _refill_cache_for_region(self, region: str):
@@ -78,6 +81,11 @@ class CacheManager:
                 limit=self.batch_number_for_every_queue
             )
             if new_alphas:
+                # 立即将这批数据标记为 'sent'，防止其他线程/进程重复获取
+                ids_to_update = [alpha['id'] for alpha in new_alphas]
+                update_count = self.alpha_dao.batch_update_status_by_ids(ids_to_update, 'sent')
+                self.logger.info(f"Immediately marked {update_count} alphas as 'sent' for region '{region}'.")
+
                 self.alpha_cache_by_region[region].extend(new_alphas)
                 self.logger.info(f"Successfully refilled cache for region '{region}' with {len(new_alphas)} new alphas.")
             else:
@@ -97,24 +105,25 @@ class CacheManager:
         Returns:
             List[Dict[str, Any]]: 符合条件的 alpha 记录列表。
         """
-        # 检查当前region的缓存是否为空，如果为空则补充
-        if not self.alpha_cache_by_region[region]:
-            self._refill_cache_for_region(region)
-        
-        # 如果补充后依然没有数据，则返回空列表
-        if not self.alpha_cache_by_region[region]:
-            return []
+        with self.lock:
+            # 检查当前region的缓存是否为空，如果为空则补充
+            if not self.alpha_cache_by_region[region]:
+                self._refill_cache_for_region(region)
+            
+            # 如果补充后依然没有数据，则返回空列表
+            if not self.alpha_cache_by_region[region]:
+                return []
 
-        # 从缓存中取出所需数量的记录
-        num_to_fetch = min(limit, len(self.alpha_cache_by_region[region]))
-        
-        # 从列表头部取出元素，模拟队列行为
-        results = [self.alpha_cache_by_region[region].pop(0) for _ in range(num_to_fetch)]
-        
-        self.logger.info(f"Retrieved {len(results)} alphas for region '{region}' from cache. " 
-                            f"{len(self.alpha_cache_by_region[region])} items remaining in cache for this region.")
-        
-        return results
+            # 从缓存中取出所需数量的记录
+            num_to_fetch = min(limit, len(self.alpha_cache_by_region[region]))
+            
+            # 从列表头部取出元素，模拟队列行为
+            results = [self.alpha_cache_by_region[region].pop(0) for _ in range(num_to_fetch)]
+            
+            self.logger.info(f"Retrieved {len(results)} alphas for region '{region}' from cache. " 
+                                f"{len(self.alpha_cache_by_region[region])} items remaining in cache for this region.")
+            
+            return results
 
     def update_alpha_status(self, alpha_ids: List[int], status: str):
         """
@@ -125,9 +134,10 @@ class CacheManager:
             alpha_ids (List[int]): 需要更新状态的 alpha 记录的 ID 列表。
             status (str): 新的状态 (e.g., 'sent', 'failed')。
         """
-        for alpha_id in alpha_ids:
-            self.dirty_alpha_ids.add((alpha_id, status))
-        self.logger.info(f"Marked {len(alpha_ids)} alphas with status '{status}' as dirty.")
+        with self.lock:
+            for alpha_id in alpha_ids:
+                self.dirty_alpha_ids.add((alpha_id, status))
+            self.logger.info(f"Marked {len(alpha_ids)} alphas with status '{status}' as dirty.")
 
     def add_simulation_tasks_batch(self, tasks_data: List[Dict[str, Any]]):
         """
@@ -136,8 +146,9 @@ class CacheManager:
         Args:
             tasks_data (List[Dict[str, Any]]): 代表新任务的字典列表。
         """
-        self.new_tasks_buffer.extend(tasks_data)
-        self.logger.info(f"Buffered {len(tasks_data)} new simulation tasks.")
+        with self.lock:
+            self.new_tasks_buffer.extend(tasks_data)
+            self.logger.info(f"Buffered {len(tasks_data)} new simulation tasks.")
 
     def get_dirty_items_count(self) -> int:
         """
@@ -147,6 +158,7 @@ class CacheManager:
         Returns:
             int: 待处理的 alpha 更新和新任务的总数。
         """
+        # lock is not strictly necessary for len(), but good for consistency if structure changes
         return len(self.dirty_alpha_ids) + len(self.new_tasks_buffer)
 
     def flush(self):
@@ -154,34 +166,35 @@ class CacheManager:
         将所有缓存的更改（更新和插入）通过批量操作同步到数据库。
         此操作在数据库事务中执行，以确保原子性。
         """
-        if not self.dirty_alpha_ids and not self.new_tasks_buffer:
-            return
+        with self.lock:
+            if not self.dirty_alpha_ids and not self.new_tasks_buffer:
+                return
 
-        self.logger.info(f"Flushing data to database: "
-                            f"{len(self.dirty_alpha_ids)} alpha updates, "
-                            f"{len(self.new_tasks_buffer)} new tasks.")
-        
-        try:
-            # 1. 处理 alpha 状态更新
-            if self.dirty_alpha_ids:
-                updates_by_status = defaultdict(list)
-                for alpha_id, status in self.dirty_alpha_ids:
-                    updates_by_status[status].append(alpha_id)
-                
-                for status, ids in updates_by_status.items():
-                    self.alpha_dao.batch_update_status_by_ids(ids, status)
-                    self.logger.info(f"Successfully flushed {len(ids)} alpha updates with status '{status}'.")
+            self.logger.info(f"Flushing data to database: "
+                                f"{len(self.dirty_alpha_ids)} alpha updates, "
+                                f"{len(self.new_tasks_buffer)} new tasks.")
             
-            # 2. 处理新任务的批量插入
-            if self.new_tasks_buffer:
-                self.task_dao.batch_insert(self.new_tasks_buffer)
-                self.logger.info(f"Successfully flushed {len(self.new_tasks_buffer)} new simulation tasks.")
+            try:
+                # 1. 处理 alpha 状态更新
+                if self.dirty_alpha_ids:
+                    updates_by_status = defaultdict(list)
+                    for alpha_id, status in self.dirty_alpha_ids:
+                        updates_by_status[status].append(alpha_id)
+                    
+                    for status, ids in updates_by_status.items():
+                        self.alpha_dao.batch_update_status_by_ids(ids, status)
+                        self.logger.info(f"Successfully flushed {len(ids)} alpha updates with status '{status}'.")
+                
+                # 2. 处理新任务的批量插入
+                if self.new_tasks_buffer:
+                    self.task_dao.batch_insert(self.new_tasks_buffer)
+                    self.logger.info(f"Successfully flushed {len(self.new_tasks_buffer)} new simulation tasks.")
 
-            # 3. 如果数据库操作成功，清空缓存
-            self.dirty_alpha_ids.clear()
-            self.new_tasks_buffer.clear()
-            self.logger.info("Flush successful. Caches cleared.")
+                # 3. 如果数据库操作成功，清空缓存
+                self.dirty_alpha_ids.clear()
+                self.new_tasks_buffer.clear()
+                self.logger.info("Flush successful. Caches cleared.")
 
-        except Exception as e:
-            self.logger.error(f"Flush failed: {e}. Caches will be retained for next retry.")
-            raise
+            except Exception as e:
+                self.logger.error(f"Flush failed: {e}. Caches will be retained for next retry.")
+                raise
