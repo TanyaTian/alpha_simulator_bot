@@ -80,6 +80,7 @@ class AlphaSimulator:
 
         # 计数器
         self.total_sent_count = 0
+        self.reserved_count = 0
 
         # 初始化缓存管理器
         self.cache_manager = CacheManager(
@@ -288,7 +289,7 @@ class AlphaSimulator:
             except Exception as e:
                 self.logger.error(f"Error in correlation/save for {alpha_id}: {e}")
 
-    def workflow_slot(self, region: str, tracker: TaskTracker):
+    def workflow_slot(self, region: str, tracker: TaskTracker, reserved_amount: int = 0):
         """
         单个工作流卡槽的执行流程。
         """
@@ -401,8 +402,11 @@ class AlphaSimulator:
         except Exception as e:
             self.logger.error(f"❌ Error in workflow_slot for region {region}: {e}", exc_info=True)
         finally:
-            # 5. 完成后释放卡槽
+            # 5. 完成后释放卡槽和预留计数
             tracker.release()
+            if reserved_amount > 0:
+                with self.lock:
+                    self.reserved_count -= reserved_amount
 
     def _check_timeouts(self):
         """检查所有活动任务的超时情况"""
@@ -432,9 +436,13 @@ class AlphaSimulator:
         while self.running:
             # 0. Check limit
             is_limit_reached = False
+            is_capacity_full = False
+            
             with self.lock:
                 if self.total_sent_count >= self.batch_number_for_every_queue:
                     is_limit_reached = True
+                elif self.total_sent_count + self.reserved_count >= self.batch_number_for_every_queue:
+                    is_capacity_full = True
             
             if is_limit_reached:
                 self.logger.warning(f"🛑 Limit reached ({self.total_sent_count} >= {self.batch_number_for_every_queue}). Sleeping for 1 hour...")
@@ -449,6 +457,11 @@ class AlphaSimulator:
                 if not self.running:
                     break
                     
+                continue
+            
+            if is_capacity_full:
+                # 已经预留了足够的量，等待任务完成
+                time.sleep(1)
                 continue
 
             # 1. 检查超时
@@ -472,9 +485,14 @@ class AlphaSimulator:
                 timeout_minutes = (self.batch_size / 10) * 30
                 timeout_seconds = timeout_minutes * 60
                 
+                # 预留计数
+                reserved_amount = self.batch_size
+                with self.lock:
+                    self.reserved_count += reserved_amount
+
                 # 创建 Tracker 和 线程
                 tracker = TaskTracker(self.semaphore, timeout_seconds, self.logger)
-                t = threading.Thread(target=self.workflow_slot, args=(region, tracker))
+                t = threading.Thread(target=self.workflow_slot, args=(region, tracker, reserved_amount))
                 t.daemon = True
                 t.start()
                 
