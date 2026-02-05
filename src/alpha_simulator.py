@@ -13,7 +13,7 @@ from logger import Logger
 from dao import SimulationTasksDAO, AlphaListPendingSimulatedDAO, StageOneSignalDAO
 from config_manager import config_manager
 from cache_manager import CacheManager
-from utils import safe_api_call
+from utils import safe_api_call, get_datasets_for_alpha
 from ace_lib import (
     check_session_and_relogin,
     simulate_multi_alpha, get_alpha_yearly_stats, get_check_submission,
@@ -273,19 +273,33 @@ class AlphaSimulator:
                     prod_corr = prod_corr_result['value'].max() if prod_corr_result is not None and not prod_corr_result.empty else 1.0
                 
                 if max_corr < 0.7 and prod_corr < 0.7:
+                    # 获取 dataset_id 和 category
+                    all_datasets_df, dataset_id = get_datasets_for_alpha(alpha_id, session)
+                    category = None
+                    if all_datasets_df is not None and not all_datasets_df.empty and 'category_id' in all_datasets_df.columns:
+                        field_categories = list(set(all_datasets_df['category_id'].dropna().tolist()))
+                        if field_categories:
+                            category = field_categories[0]
+                        else:
+                            category = 'unknown'
+                    else:
+                        category = 'unknown'
+
                     # 通过检查，保存信号
                     record = {
                         "alpha_id": alpha_id,
                         "region": context['region'],
                         "universe": context['universe'],
                         "delay": context['delay'],
+                        "dataset_id": dataset_id,
+                        "category": category,
                         "date_time": context['date_time'],
                         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     }
                     self.stage_one_signal_dao.upsert_signal(record)
                     # 打标签
                     safe_api_call(set_alpha_properties, session, alpha_id, tags=[f"AlphaSim_{context['date_time']}"])
-                    self.logger.info(f"✅ Saved Alpha {alpha_id} (Fitness: {alpha_item['fitness']:.2f})")
+                    self.logger.info(f"✅ Saved Alpha {alpha_id} (Fitness: {alpha_item['fitness']:.2f}, Dataset: {dataset_id}, Category: {category})")
             except Exception as e:
                 self.logger.error(f"Error in correlation/save for {alpha_id}: {e}")
 
