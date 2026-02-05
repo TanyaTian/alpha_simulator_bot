@@ -115,7 +115,9 @@ class AlphaSimulator:
     def _handle_config_change(self, new_config):
         """配置变更回调处理"""
         self._load_config_from_manager()
+        self.total_sent_count = 0
         self.logger.info("Configuration reloaded due to config center update")
+        self.logger.info("total_sent_count is update to 0.")
 
     def simulate_alphas(self, alpha_list: List[Dict]) -> List[Dict]:
         """
