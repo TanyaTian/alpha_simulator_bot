@@ -78,6 +78,9 @@ class AlphaSimulator:
         self.simulation_task_dao = SimulationTasksDAO()
         self.stage_one_signal_dao = StageOneSignalDAO()
 
+        # 计数器
+        self.total_sent_count = 0
+
         # 初始化缓存管理器
         self.cache_manager = CacheManager(
             alpha_dao=self.alpha_list_pending_simulated_dao,
@@ -291,8 +294,9 @@ class AlphaSimulator:
             self.logger.info(f"🚀 [Workflow Slot] Started for region: {region}")
             
             # 1. 从数据库捞取 batch_size 个 pending alpha
-            self.logger.info(f"📋 [Stage 1/4] Fetching {self.batch_size} pending alphas from cache for {region}...")
-            db_records = self.cache_manager.get_pending_alphas_by_region(region, self.batch_size)
+            self.logger.info(f"📋 [Stage 1/4] Fetching {self.batch_size} pending alphas from database for {region}...")
+            # 直接从数据库获取并锁定
+            db_records = self.alpha_list_pending_simulated_dao.fetch_and_lock_pending_by_region(region, self.batch_size)
             if not db_records:
                 self.logger.info(f"ℹ️ No pending alphas found for region: {region}. Slot exiting.")
                 return
@@ -300,8 +304,13 @@ class AlphaSimulator:
             # 2. 将这批 alpha 的状态改为 sent
             self.logger.info(f"🔄 [Stage 1/4] Marking {len(db_records)} records as 'sent'...")
             record_ids = [r['id'] for r in db_records]
-            self.cache_manager.update_alpha_status(record_ids, 'sent')
-            self.cache_manager.flush()
+            # 直接使用 DAO 更新状态
+            self.alpha_list_pending_simulated_dao.batch_update_status_by_ids(record_ids, 'sent')
+            
+            # 累加 total_sent_count
+            with self.lock:
+                self.total_sent_count += len(record_ids)
+                self.logger.info(f"📈 Total sent count updated: {self.total_sent_count}")
 
             self.logger.info(f"🏗️ [Stage 2/4] Generating simulation job list...")
             alpha_list = []
@@ -419,6 +428,27 @@ class AlphaSimulator:
 
         self.logger.info("AlphaSimulator starting simulation management...")
         while self.running:
+            # 0. Check limit
+            is_limit_reached = False
+            with self.lock:
+                if self.total_sent_count >= self.batch_number_for_every_queue:
+                    is_limit_reached = True
+            
+            if is_limit_reached:
+                self.logger.warning(f"🛑 Limit reached ({self.total_sent_count} >= {self.batch_number_for_every_queue}). Sleeping for 1 hour...")
+                
+                # Sleep for 1 hour, but check self.running every second
+                sleep_start = time.time()
+                while time.time() - sleep_start < 3600:
+                    if not self.running:
+                        break
+                    time.sleep(1)
+                
+                if not self.running:
+                    break
+                    
+                continue
+
             # 1. 检查超时
             self._check_timeouts()
             
