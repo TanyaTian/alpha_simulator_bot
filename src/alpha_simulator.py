@@ -266,13 +266,19 @@ class AlphaSimulator:
                 # 计算自相关性
                 max_corr = calc_self_corr(alpha_id, session, os_alpha_rets, os_alpha_ids)
                 
-                prod_corr = 1.0
-                if max_corr < 0.7:
-                    # 检查生产环境相关性
-                    prod_corr_result = safe_api_call(check_prod_corr_test, session, alpha_id)
-                    prod_corr = prod_corr_result['value'].max() if prod_corr_result is not None and not prod_corr_result.empty else 1.0
-                
-                if max_corr < 0.7 and prod_corr < 0.7:
+                # --- 原有的相关性判断和过滤逻辑开始 ---
+                # 注释理由：平台的prod_corr获取非常不稳定，影响服务的正常运行。
+                # prod_corr = 1.0
+                # if max_corr < 0.7:
+                #     # 检查生产环境相关性
+                #     prod_corr_result = safe_api_call(check_prod_corr_test, session, alpha_id)
+                #     prod_corr = prod_corr_result['value'].max() if prod_corr_result is not None and not prod_corr_result.empty else 1.0
+                # 
+                # if max_corr < 0.7 and prod_corr < 0.7:
+                # --- 原有的相关性判断和过滤逻辑结束 ---
+
+                # 新逻辑：仅使用 calc_self_corr 获取的 max_corr < 0.5 则通过过滤
+                if max_corr < 0.5:
                     # 获取 dataset_id 和 category
                     all_datasets_df, dataset_id = get_datasets_for_alpha(alpha_id, session)
                     category = None
@@ -299,7 +305,9 @@ class AlphaSimulator:
                     self.stage_one_signal_dao.upsert_signal(record)
                     # 打标签
                     safe_api_call(set_alpha_properties, session, alpha_id, tags=[f"AlphaSim_{context['date_time']}"])
-                    self.logger.info(f"✅ Saved Alpha {alpha_id} (Fitness: {alpha_item['fitness']:.2f}, Dataset: {dataset_id}, Category: {category})")
+                    self.logger.info(f"✅ Saved Alpha {alpha_id} (Fitness: {alpha_item['fitness']:.2f}, MaxCorr: {max_corr:.4f}, Dataset: {dataset_id}, Category: {category})")
+                else:
+                    self.logger.info(f"❌ Alpha {alpha_id} 未通过相关性过滤 (MaxCorr: {max_corr:.4f} >= 0.5)")
             except Exception as e:
                 self.logger.error(f"Error in correlation/save for {alpha_id}: {e}")
 
