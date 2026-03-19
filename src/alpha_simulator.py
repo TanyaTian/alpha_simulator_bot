@@ -2,6 +2,7 @@ import time
 import os
 import ast
 import json
+import requests
 import threading
 import random
 import pandas as pd
@@ -123,7 +124,7 @@ class AlphaSimulator:
     def simulate_alphas(self, alpha_list: List[Dict]) -> List[Dict]:
         """
         模拟一组 alpha。
-        参考 stage_one_workflow.py 的 simulate_alphas 节点逻辑。
+        直接调用 simulate_multi_alpha 并处理 429 和 Session 过期重试逻辑。
         """
         sim_jobs = []
         for alpha in alpha_list:
@@ -132,15 +133,55 @@ class AlphaSimulator:
                 "settings": alpha.get('settings', {}),
                 "regular": alpha.get('regular', '')
             })
+
+        # 添加响应钩子以便捕获 429 和 401
+        def raise_on_retryable(r, *args, **kwargs):
+            if r.status_code in [429, 401]:
+                r.raise_for_status()
         
-        try:
-            session = check_session_and_relogin(self.session)
-            self.session = session
-            # 执行批量仿真
-            return safe_api_call(simulate_multi_alpha, session, sim_jobs)
-        except Exception as e:
-            self.logger.error(f"simulate_alphas failed: {e}")
-            return []
+        if not self.session:
+            self.session = config_manager.get_session()
+            
+        if raise_on_retryable not in self.session.hooks['response']:
+            self.session.hooks['response'].append(raise_on_retryable)
+
+        max_retries = 5
+        retry_delay = 300  # 5 minutes
+        
+        for attempt in range(max_retries):
+            try:
+                session = check_session_and_relogin(self.session)
+                self.session = session
+                
+                # 直接调用 simulate_multi_alpha (不再使用 safe_api_call)
+                return simulate_multi_alpha(session, sim_jobs)
+                
+            except requests.exceptions.HTTPError as e:
+                status_code = e.response.status_code
+                if status_code in [429, 401]:
+                    self.logger.warning(f"Simulate Alphas encountered {status_code}. "
+                                       f"Attempt {attempt + 1}/{max_retries}. "
+                                       f"Waiting 5 mins before retry...")
+                    if attempt < max_retries - 1:
+                        time.sleep(retry_delay)
+                        if status_code == 401:
+                            # 如果是 401，尝试重新登录
+                            try:
+                                from ace_lib import start_session
+                                self.session = start_session()
+                            except Exception as login_err:
+                                self.logger.error(f"Force re-login failed: {login_err}")
+                        continue
+                
+                # 如果是其他错误或者是最后一次尝试
+                self.logger.error(f"simulate_alphas failed after {attempt + 1} retries: {e}")
+                break
+            except Exception as e:
+                # 处理其他非 HTTP 异常
+                self.logger.error(f"simulate_alphas encountered unexpected error: {e}")
+                break
+        
+        return []
 
     def filter_alphas(self, alpha_ids: List[str], tracker: TaskTracker = None) -> Tuple[List[Dict], List[Dict]]:
         """
