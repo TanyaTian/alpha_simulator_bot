@@ -561,6 +561,10 @@ class AlphaSimulator:
                 
                 with self.lock:
                     self.active_tasks.append((t, tracker, region))
+
+                # 增加 3 秒间隔，避免瞬间并发触发平台限流
+                self.logger.info("Waiting 3 seconds before next task to avoid rate limiting...")
+                time.sleep(3)
             else:
                 # 卡槽已满，等待
                 time.sleep(3)
