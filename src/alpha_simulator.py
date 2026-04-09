@@ -544,8 +544,8 @@ class AlphaSimulator:
                     region = self.region_set[0]
                     self.region_set.rotate(-1)
                 
-                # 计算超时时间：batch_size / 10 * 30 分钟
-                timeout_minutes = (self.batch_size / 10) * 30
+                # 计算超时时间：15 分钟
+                timeout_minutes = 15
                 timeout_seconds = timeout_minutes * 60
                 
                 # 预留计数
