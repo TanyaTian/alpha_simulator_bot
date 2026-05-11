@@ -6,9 +6,9 @@ services:
       dockerfile: Dockerfile  # 指定根目录下的 Dockerfile
     volumes:
       - ../logs:/logs  # 从 docker/ 到根目录下的 logs/
-      - ../data:/data  # 从 docker/ 到根目录下的 data/
-      - ../config:/config  # 新增挂载
-      - ../output:/output  # 新增挂载
+      - ../data:/app/data  # 挂载到 /app/data 以匹配代码中的相对路径
+      - ../config:/app/config  # 挂载到 /app/config 以匹配代码中的相对路径
+      - ../output:/app/output  # 挂载到 /app/output 以匹配代码中的相对路径
     command: python main.py
     stop_grace_period: 60s  # 设置 60 秒超时
     extra_hosts:
