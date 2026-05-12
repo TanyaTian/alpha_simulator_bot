@@ -1,6 +1,6 @@
-from dao.alpha_signal_dao import AlphaSignalDAO
+from dao.stage_one_signal_dao import StageOneSignalDAO
 from dao.alpha_list_pending_simulated_dao import AlphaListPendingSimulatedDAO
-from utils import get_alphas_from_data
+from ace_lib import start_session, check_session_and_relogin, get_simulation_result_json
 from datetime import datetime
 from logger import Logger
 import random
@@ -9,44 +9,15 @@ import ast
 class AlphaSignalFactory:
     def __init__(self):
         self.logger = Logger()
-        self.signal_dao = AlphaSignalDAO()
+        self.stage_one_dao = StageOneSignalDAO()
         self.pending_dao = AlphaListPendingSimulatedDAO()
-        self.group_ops = ['group_rank', 'group_scale', 'group_count', 'group_zscore', 'group_std_dev', 'group_sum', 'group_neutralize']
-        self.ts_ops = ["ts_rank", "ts_zscore", "ts_sum", "ts_delta", "ts_delay", "ts_av_diff", "ts_ir",
-            "ts_std_dev", "ts_mean",  "ts_arg_min", "ts_arg_max","ts_scale", "ts_quantile",
-            "ts_kurtosis", "ts_max_diff", "ts_product", "ts_returns"]
+        self.session = start_session()
+        self.group_ops = ['group_rank', 'group_zscore', 'group_neutralize']
+        self.ts_ops = ["ts_rank", "ts_zscore",  "ts_ir", "ts_delta",
+            "ts_arg_min", "ts_arg_max", "ts_scale", "ts_quantile",
+            "ts_kurtosis", "ts_product", "ts_returns"]
         
-    def extract_signal_settings(self, raw_signals):
-        """
-        从原始信号中提取设置信息
-        
-        Args:
-            raw_signals: 原始信号列表，每个信号是一个字典，包含'id'和'setting'
-            
-        Returns:
-            字典,key为信号id,value为另一个字典,包含region, universe, neutralization, maxTrade, visualization, delay
-        """
-        settings_dict = {}
-        for signal in raw_signals:
-            try:
-                # 将setting字符串解析为字典
-                setting_dict = ast.literal_eval(signal['settings'])
-                # 提取所需字段
-                settings_dict[signal['id']] = {
-                    'region': setting_dict.get('region'),
-                    'universe': setting_dict.get('universe'),
-                    'neutralization': setting_dict.get('neutralization'),
-                    'maxTrade': setting_dict.get('maxTrade'),
-                    'visualization': setting_dict.get('visualization'),
-                    'delay': setting_dict.get('delay', 1)  # 默认值为1
-                }
-            except Exception as e:
-                print(f"Error parsing settings for signal id {signal['id']}: {e}")
-        return settings_dict
-
-
-    
-    def process_signals(self, date_time, priority=5, mode='normal', filter_words=''):
+    def process_signals(self, date_time, priority=5, mode='normal', operator_type='all', margin_limit=0.0):
         """
         处理信号，优化并存储为待模拟的alpha
         
@@ -54,75 +25,84 @@ class AlphaSignalFactory:
             date_time: 日期时间
             priority: 任务优先级，默认为5
             mode: 处理模式，'test'为测试模式，'normal'为正常模式
-            filter_words: 过滤字段，可以是字符串或字符串列表，为空时不进行过滤
+            operator_type: 算子类型，'ts'为时间序列，'group'为分组，'all'为两者都添加
+            margin_limit: margin限制，过滤掉In-Sample margin小于该值的alpha
         """
-        regions = ['USA', 'CHN', 'GLB', 'EUR', 'ASI']
+        self.session = check_session_and_relogin(self.session)
         signal_optimize_set = {}
+        settings_dict = {}
         
-        # 从数据库获取原始alpha信号
-        raw_signals = self.signal_dao.get_by_datetime(date_time)
+        # 从 StageOneSignalDAO 获取原始 alpha 信号
+        raw_signals_db = self.stage_one_dao.get_all_by_date_time(date_time)
         
-        # 应用过滤字段
-        if filter_words:
-            # 将单个过滤字段转换为列表格式
-            if isinstance(filter_words, str):
-                filter_words_list = [filter_words]
-            else:
-                filter_words_list = filter_words
-            
-            # 对列表中的所有字段进行过滤
-            raw_signals = [signal for signal in raw_signals 
-                          if not any(field in signal.get('regular', '') for field in filter_words_list)]
-        
-        if not raw_signals:
-            self.logger.info("No signals found for processing")
+        if not raw_signals_db:
+            self.logger.info(f"No signals found for date_time: {date_time}")
             return
+
+        self.logger.info(f"Found {len(raw_signals_db)} signals in database for {date_time}")
         
-        self.logger.info(f"Found {len(raw_signals)} raw signals for processing")
+        # 获取详细信息并按 region 分组
+        region_signals = {}
         
-        for region in regions:
-            alpha_signals = get_alphas_from_data(
-                raw_signals, 
-                min_sharpe=1.2, 
-                min_fitness=0.7, 
-                mode="track", 
-                region_filter=region, 
-                single_data_set_filter=None
-            )
-            
-            if not alpha_signals:
-                self.logger.info(f"No alpha signals found for region: {region}")
+        for sig in raw_signals_db:
+            alpha_id = sig['alpha_id']
+            details = get_simulation_result_json(self.session, alpha_id)
+            if not details:
+                self.logger.warning(f"Failed to get details for alpha {alpha_id}")
                 continue
-                
-            self.logger.info(f"Region {region}: Found {len(alpha_signals)} alpha signals")
-            # 打印前三个信号内容
-            for i, rec in enumerate(alpha_signals[:3]):
-                self.logger.info(f"Signal {i+1} in {region}: ID={rec[0]}, Expression={rec[1][:100]}...")
-                
-            # 记录分组前数量
-            total_signals = len(alpha_signals)
+            
+            # 提取代码
+            regular_data = details.get('regular', {})
+            code = regular_data.get('code')
+            if not code:
+                continue
+            
+            # margin 过滤
+            is_stats = details.get('is', {})
+            margin = is_stats.get('margin', 0)
+            if margin < margin_limit:
+                self.logger.info(f"Alpha {alpha_id} filtered: margin {margin} < {margin_limit}")
+                continue
+            
+            settings = details.get('settings', {})
+            region = settings.get('region', 'USA')
+            decay = settings.get('decay', 0)
+            
+            if region not in region_signals:
+                region_signals[region] = []
+            
+            # 准备 _optimize_expressions 需要的格式 [alpha_id, code, decay]
+            region_signals[region].append((alpha_id, code, decay))
+            self.logger.info(f"Alpha {alpha_id} accepted for region {region} optimization")
+            
+            # 保存设置用于 prepare_simulation_data
+            settings_dict[alpha_id] = settings
+
+        total_valid_signals = sum(len(sigs) for sigs in region_signals.values())
+        self.logger.info(f"Total valid signals for optimization after filtering: {total_valid_signals}")
+
+        if not region_signals:
+            self.logger.info("No valid signals after fetching details and filtering")
+            return
+
+        for region, alpha_signals in region_signals.items():
+            self.logger.info(f"Region {region}: Processing {len(alpha_signals)} alpha signals")
                 
             # 按表达式是否包含换行符分组
             multi_line_signals = [rec for rec in alpha_signals if '\n' in rec[1]]
             single_line_signals = [rec for rec in alpha_signals if '\n' not in rec[1]]
             
             # 优化处理
-            optimized_multi = self._optimize_expressions(multi_line_signals, region, multi_line=True)
+            optimized_multi = self._optimize_expressions(multi_line_signals, region, multi_line=True, operator_type=operator_type)
             self.logger.info(f"Region {region}: Multi-line optimized signals: {len(optimized_multi)}")
             
-            optimized_single = self._optimize_expressions(single_line_signals, region, multi_line=False)
+            optimized_single = self._optimize_expressions(single_line_signals, region, multi_line=False, operator_type=operator_type)
             self.logger.info(f"Region {region}: Single-line optimized signals: {len(optimized_single)}")
-            
-            # 记录优化后总数
-            total_optimized = len(optimized_multi) + len(optimized_single)
-            self.logger.info(f"Region {region}: Total optimized signals: {total_optimized} (from {total_signals} originals)")
             
             # 合并优化结果
             signal_optimize_set[region] = optimized_multi + optimized_single
+            self.logger.info(f"Region {region}: Total optimized signals: {len(signal_optimize_set[region])} (from {len(alpha_signals)} originals)")
             
-        # 获取信号设置
-        settings_dict = self.extract_signal_settings(raw_signals)
-        
         # 根据模式进行采样（在优化后的表达式上采样）
         sampled_optimize_set = {}
         for region, signals in signal_optimize_set.items():
@@ -151,41 +131,36 @@ class AlphaSignalFactory:
             priority=priority
         )
         
-        # 合并所有记录用于插入并随机打乱
+        # 合并所有记录用于插入
         all_records = []
         for region, region_records in simulation_records_by_region.items():
-            self.logger.info(f"Region {region}: Prepared {len(region_records)} simulation records")
-            random.shuffle(region_records)
-            self.logger.info(f"{region} records after shuffling: {len(region_records)}")
+            self.logger.info(f"Region {region}: Collected {len(region_records)} simulation records")
             all_records.extend(region_records)
         
-        # 随机打乱记录以增加挖掘随机性
-        
-        
-        # 将处理后的信号插入待模拟表
+        # 将合并后的所有记录进行全局随机打乱，确保不同地区、不同类型的 alpha 混合在一起
         if all_records:
-            # 这里假设pending_dao支持新格式的批量插入
-            # Batch insert records
+            self.logger.info(f"Performing global shuffle on {len(all_records)} total records...")
+            # 使用 random.sample 全量采样是生成全新打乱列表的最稳妥方式
+            all_records = random.sample(all_records, len(all_records))
+            # 再次使用 shuffle 确保极致打乱
+            random.shuffle(all_records)
+            
             inserted_count = self.pending_dao.batch_insert(all_records)
-            self.logger.info(f"Successfully inserted {inserted_count} records into database")
-            self.logger.info(f"Inserted {len(all_records)} optimized signals for simulation")
+            self.logger.info(f"Successfully inserted {inserted_count} shuffled records into database")
         else:
             self.logger.info("No optimized signals to insert")
             
-        # 记录前3个插入的信号内容
-        for i, record in enumerate(all_records[:3]):
-            self.logger.info(f"Inserted signal {i+1}: ID={record['settings'][:100]}, Expression={record['regular'][:100]}...")
-            
-        return simulation_records_by_region  # 返回按region分组的记录
+        return simulation_records_by_region
 
-    def _optimize_expressions(self, signals, region, multi_line=False):
+    def _optimize_expressions(self, signals, region, multi_line=False, operator_type='all'):
         """
         优化表达式集合
         
         Args:
-            signals: 信号列表 [alpha_id, exp, sharpe, turnover, fitness, margin, dateCreated, decay]
+            signals: 信号列表 [alpha_id, exp, decay]
             region: 地区代码
             multi_line: 是否为多行表达式
+            operator_type: 算子类型
             
         Returns:
             优化后的信号列表
@@ -196,22 +171,8 @@ class AlphaSignalFactory:
             exp = rec[1]
             decay = rec[-1]  # 获取decay值
             
-            # 分析表达式中的操作符数量
-            if multi_line:
-                # 对于多行表达式，分析最后一行
-                lines = exp.split('\n')
-                last_line = lines[-1].strip()
-                ts_ops_count = self._count_operations(last_line, self.ts_ops)
-                group_ops_count = self._count_operations(last_line, self.group_ops)
-            else:
-                ts_ops_count = self._count_operations(exp, self.ts_ops)
-                group_ops_count = self._count_operations(exp, self.group_ops)
-                
-            total_ops = ts_ops_count + group_ops_count
-            
-            # 应用优化条件
-            if ts_ops_count < 2 and total_ops < 4:
-                # 时间序列优化
+            # 时间序列优化
+            if operator_type in ['ts', 'all']:
                 new_exps = self.first_order_factory_with_day(
                     [exp], 
                     self.ts_ops, 
@@ -221,9 +182,9 @@ class AlphaSignalFactory:
                 for new_exp in new_exps:
                     # 创建新记录：更新表达式, 添加decay
                     optimized_signals.append((alpha_id, new_exp , decay))
-                    
-            if group_ops_count < 2 and total_ops < 4:
-                # 分组优化
+            
+            # 分组优化
+            if operator_type in ['group', 'all']:
                 new_exps = self.get_group_second_order_factory(
                     [exp], 
                     self.group_ops, 
@@ -285,11 +246,11 @@ class AlphaSignalFactory:
                         'delay': signal_settings.get('delay', 1),  # 使用提取的delay值
                         'decay': decay,
                         'neutralization': signal_settings.get('neutralization', 'NONE'),
-                        'truncation': 0.08,
+                        'truncation': signal_settings.get('truncation', 0.01),
                         'pasteurization': 'ON',
                         'testPeriod': 'P0Y',
                         'unitHandling': 'VERIFY',
-                        'nanHandling': 'ON',
+                        'nanHandling': 'OFF',
                         'language': 'FASTEXPR',
                         'visualization': signal_settings.get('visualization', False),
                         'maxTrade': signal_settings.get('maxTrade', 'OFF')
@@ -347,7 +308,7 @@ class AlphaSignalFactory:
         """
         output = []
         vectors = ["cap"]
-        """
+        
         # 分组定义（统一管理避免重复）
         region_groups = {
             "CHN": ['pv13_h_min2_sector', 'pv13_di_6l', 'pv13_rcsed_6l', 'pv13_di_5l', 
@@ -356,7 +317,7 @@ class AlphaSignalFactory:
                    'sta2_top3000_fact4_c10', 'sta2_top2000_fact4_c50', 'sta2_top3000_fact3_c20'],
                    
             "HKG": ['pv13_10_f3_g2_minvol_1m_sector', 'pv13_10_minvol_1m_sector', 'pv13_20_minvol_1m_sector', 
-                   'pv13_2_minvol_1m_sector', 'pv13_5_minvol1m_sector', 'pv13_1l_scibr', 'pv13_3l_scibr',
+                   'pv13_2_minvol_1m_sector', 'pv13_1l_scibr', 'pv13_3l_scibr',
                    'pv13_2l_scibr', 'pv13_4l_scibr', 'pv13_5l_scibr',
                    'sta1_allc50', 'sta1_allc5', 'sta1_allxjp_513_c20', 'sta1_top2000xjp_513_c5',
                    'sta2_all_xjp_513_all_fact4_c10', 'sta2_top2000_xjp_513_top2000_fact3_c10',
@@ -416,7 +377,12 @@ class AlphaSignalFactory:
         vol_group = "bucket(rank(ts_std_dev(returns,20)),range = '0.1, 1, 0.1')"
         liquidity_group = "bucket(rank(close*volume),range = '0.1, 1, 0.1')"
         country_group = ["country"]
-        
+        # 新增 ASI 验证有效的分组
+        nlvolcap_group = "bucket(rank(mdl177_nlvolcap), range='0.1, 1, 0.1')"
+        mktcappera_group = "bucket(rank(mdl77_mktcappera), range='0.1, 1, 0.1')"
+        share_count_group = "bucket(rank(aggregate_share_count_all_owners), range='0.1, 1, 0.1')"
+
+        """
         # 组合分组定义
         combo_group = ["group_cartesian_product(country, market)", 
                      "group_cartesian_product(country, industry)", 
@@ -453,13 +419,23 @@ class AlphaSignalFactory:
                         "group_cartesian_product(country, industry)", 
                         "group_cartesian_product(country, subindustry)", 
                         "group_cartesian_product(country, exchange)",
-                        "group_cartesian_product(country, sector)"]
+                        "group_cartesian_product(country, sector)",
+                        nlvolcap_group, mktcappera_group, share_count_group,
+                        cap_group, sector_cap_group]
         
-        eur_atom_group = asi_atom_group.copy()
-        glb_atom_group = asi_atom_group.copy()
+        eur_atom_group = ["market", "sector", "industry", "subindustry", "exchange", "country",
+                        "group_cartesian_product(country, market)", 
+                        "group_cartesian_product(country, industry)", 
+                        "group_cartesian_product(country, subindustry)", 
+                        "group_cartesian_product(country, exchange)",
+                        "group_cartesian_product(country, sector)",
+                        cap_group, sector_cap_group]
+        
+        glb_atom_group = eur_atom_group.copy()
         
         chn_atom_group = ["market", "sector", "industry", "subindustry", "exchange"]
         ind_atom_group = ["market", "sector", "industry", "subindustry", "exchange"]
+        hkg_atom_group = ["market", "sector", "industry", "subindustry", "exchange"]
         
         # 根据region选择对应的group集合（直接匹配大写）
         if region == 'USA':
@@ -474,6 +450,8 @@ class AlphaSignalFactory:
             groups = chn_atom_group
         elif region == 'IND':
             groups = ind_atom_group
+        elif region == 'HKG':
+            groups = hkg_atom_group
         else:
             raise ValueError(f"无效的region: {region}，必须是'USA', 'ASI', 'EUR', 'GLB'或'CHN'（大写）, 'IND'")
         
@@ -571,7 +549,7 @@ def main():
     """
     主函数,用于从命令行调用生成优化alpha并插入数据库
     """
-    dates = ['20251030', '20251031']  # 示例日期列表
+    dates = ['20260511']  # 示例日期列表
     # 设置日志
     logger = Logger()
     logger.info("Starting Alpha Signal Factory")
@@ -580,7 +558,8 @@ def main():
         try:
             # 创建工厂对象并运行
             factory = AlphaSignalFactory()
-            factory.process_signals(date_time=date, priority=1, mode='normal', filter_words = ['fnd65', 'call', 'anl', 'put', 'open', 'close', 'volume', 'amount'])
+            # 示例：仅添加 TS 算子，且 margin >= 0.05
+            factory.process_signals(date_time=date, priority=1, mode='normal', operator_type='group', margin_limit=0.0)
             logger.info("✅ Alpha signal processing completed successfully")
         except Exception as e:
             logger.error(f"❌ Alpha signal processing failed: {str(e)}")

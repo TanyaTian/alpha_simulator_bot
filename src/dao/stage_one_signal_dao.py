@@ -35,6 +35,25 @@ class StageOneSignalDAO:
             self.logger.error(f"Error querying alphas by batch: {e}")
             return []
 
+    def get_all_by_date_time(self, date_time):
+        """
+        根据 date_time 获取所有 Alpha 信号。
+        :param date_time: 日期时间 (YYYYMMDD)
+        :return: List[Dict]
+        """
+        self.logger.debug(f"Querying all alphas by date_time: {date_time}")
+        
+        sql = f"SELECT * FROM {self.TABLE_NAME} WHERE date_time = %s"
+        params = (date_time,)
+        
+        try:
+            result = self.db.query(sql, params)
+            self.logger.debug(f"Found {len(result)} alphas for date_time {date_time}")
+            return result
+        except Exception as e:
+            self.logger.error(f"Error querying alphas by date_time: {e}")
+            return []
+
     def get_oldest_pending_signal(self):
         """
         按照时间顺序查询最久还保持 pending 状态的 alpha。

@@ -77,7 +77,7 @@ class AlphaListPendingSimulatedDAO:
             AND status = 'pending'
         ORDER BY 
             priority ASC, 
-            created_at ASC
+            id ASC
         LIMIT %s
         """
         params = (region, limit)
@@ -107,7 +107,7 @@ class AlphaListPendingSimulatedDAO:
             AND status = 'pending'
         ORDER BY 
             priority ASC, 
-            created_at ASC
+            id ASC
         LIMIT %s
         FOR UPDATE SKIP LOCKED
         """
