@@ -7,6 +7,7 @@ import re
 import time
 import random
 import json
+import requests
 from datetime import datetime
 from pytz import timezone
 from logger import Logger
@@ -18,6 +19,57 @@ from cached_data_fetcher import get_datafields_with_cache
 
 # 创建全局 Logger 实例
 logger = Logger()
+
+# 全局算子数据缓存，避免重复调用接口
+_OPERATORS_CACHE = None
+
+def fetch_data(session, params, max_retries=3, delay=5):
+    """
+    使用 session.get 方法调用 API 获取数据集，并返回 DataFrame 格式的 results 数据。
+    添加了失败重试机制。
+
+    Args:
+        session: requests.Session 对象，用于发送 HTTP 请求。
+        params (dict): API 请求参数字典。
+        max_retries (int): 最大重试次数。
+        delay (int): 重试之间的延迟秒数。
+
+    Returns:
+        pd.DataFrame: API 返回的 results 数据，转换为 DataFrame 格式。如果请求失败或无数据，返回空的 DataFrame。
+    """
+    base_url = "https://api.worldquantbrain.com/data-sets"
+    for attempt in range(max_retries):
+        try:
+            # 使用 session.get 发送请求，params 自动转换为查询字符串
+            response = session.get(base_url, params=params)
+            response.raise_for_status()  # 检查请求是否成功，若失败抛出异常
+            data = response.json()
+            results = data.get('results', [])
+            if not results:
+                print(f"类别 '{params.get('category', 'unknown')}' 未返回数据")
+                return pd.DataFrame()  # 返回空的 DataFrame
+            return pd.DataFrame(results)
+        except requests.exceptions.RequestException as e:
+            print(f"获取数据失败 (尝试 {attempt + 1}/{max_retries})，错误: {e}")
+            if attempt < max_retries - 1:
+                print(f"将在 {delay} 秒后重试...")
+                time.sleep(delay)
+            else:
+                print("已达到最大重试次数，放弃获取数据。")
+                return pd.DataFrame()
+
+def write_to_csv(df, file_path, mode='w'):
+    """
+    将 DataFrame 写入 CSV 文件。
+    
+    Args:
+        df (pd.DataFrame): 要写入的数据。
+        file_path (str): 文件路径。
+        mode (str): 写入模式，'w' 为覆盖，'a' 为追加。
+    """
+    os.makedirs(os.path.dirname(file_path), exist_ok=True)
+    header = not os.path.exists(file_path) or mode == 'w'
+    df.to_csv(file_path, index=False, mode=mode, header=header)
 
 def get_eastern_time():
     """获取美东时间"""
@@ -38,6 +90,43 @@ def read_csv(file_path):
 def write_csv(df, file_path):
     """写入 DataFrame 到 CSV 文件"""
     df.to_csv(file_path, index=False)
+
+def sample_alphas_from_file(filename: str, percentage: float) -> List[str]:
+    """
+    从 JSON 文件中读取 alpha 表达式列表，并返回随机抽样的列表。
+    
+    Args:
+        filename (str): 包含 alpha 列表的 JSON 文件路径。
+        percentage (float): 抽样百分比（如 0.03 表示 3%）。
+        
+    Returns:
+        List[str]: 随机抽样的 alpha 表达式列表。
+    """
+    try:
+        if not os.path.exists(filename):
+            print(f"File not found: {filename}")
+            return []
+            
+        with open(filename, 'r') as f:
+            alphas = json.load(f)
+            
+        if not isinstance(alphas, list):
+            print(f"Error: Expected a list in {filename}, but got {type(alphas)}")
+            return []
+            
+        total_count = len(alphas)
+        sample_size = int(total_count * percentage)
+        
+        # 确保如果列表不为空，至少抽取一个（如果百分比 > 0）
+        if sample_size <= 0 and total_count > 0 and percentage > 0:
+            sample_size = 1
+            
+        sampled_alphas = random.sample(alphas, min(sample_size, total_count))
+        print(f"Sampled {len(sampled_alphas)} alphas ({percentage*100:.2f}%) from total {total_count} in {filename}")
+        return sampled_alphas
+    except Exception as e:
+        print(f"Error sampling alphas from {filename}: {e}")
+        return []
 
 
 def load_config(config_file="config/config.ini"):
@@ -213,6 +302,8 @@ def get_alphas_from_data(data_rows, min_sharpe, min_fitness, mode="track", regio
             margin = is_data.get('margin', 0)
             longCount = is_data.get('longCount', 0)
             shortCount = is_data.get('shortCount', 0)
+            returns = is_data.get('returns', 0)
+            drawdown = is_data.get('drawdown', 0)
             checks = is_data.get('checks', [])
             
             dateCreated = row['dateCreated']
@@ -247,6 +338,8 @@ def get_alphas_from_data(data_rows, min_sharpe, min_fitness, mode="track", regio
                             turnover,
                             fitness,
                             margin,
+                            returns,
+                            drawdown,
                             dateCreated,
                             decay
                         ]
@@ -284,6 +377,8 @@ def get_alphas_from_data(data_rows, min_sharpe, min_fitness, mode="track", regio
                             turnover,
                             fitness,
                             margin,
+                            returns,
+                            drawdown,
                             dateCreated,
                             decay
                         ]
@@ -332,6 +427,15 @@ def safe_api_call(func, *args, max_retries=3, initial_delay=60, **kwargs):
             # Handle network errors
             print(f"Warning: API call failed with network error: {e}. Retrying in {delay}s... (Attempt {attempt + 1}/{max_retries})")
 
+        except requests.exceptions.HTTPError as e:
+            # Handle HTTP errors, specifically 429 (Too Many Requests) or server errors
+            status_code = e.response.status_code if e.response is not None else "Unknown"
+            if status_code in [429, 500, 502, 503, 504]:
+                print(f"Warning: API call failed with HTTP {status_code}: {e}. Retrying in {delay}s... (Attempt {attempt + 1}/{max_retries})")
+            else:
+                # For other HTTP errors (e.g., 401, 403, 404), re-raise immediately
+                raise
+
         except json.JSONDecodeError as e:
             # Handle JSON parsing errors
             print(f"Warning: Failed to decode JSON response: {e}. Retrying in {delay}s... (Attempt {attempt + 1}/{max_retries})")
@@ -360,7 +464,14 @@ def extract_datafields(expression: str, brain_session) -> set:
         A set containing all candidate data fields.
     """
     # 1. --- 封装的逻辑：获取并构建算子关键词集合 ---
-    raw_operators_data = safe_api_call(ace.get_operators, brain_session)
+    global _OPERATORS_CACHE
+    if _OPERATORS_CACHE is None:
+        logger.info("Operators cache is empty. Fetching operators from platform API...")
+        _OPERATORS_CACHE = safe_api_call(ace.get_operators, brain_session)
+    #else:
+        #logger.info("Operators data found in cache. Using cached data.")
+    
+    raw_operators_data = _OPERATORS_CACHE
     if raw_operators_data is None:
         print("Error: Could not fetch operators. Aborting field extraction.")
         return set()
@@ -594,11 +705,23 @@ def get_datasets_for_alpha(alpha_id: str, brain_session) -> pd.DataFrame:
     # Use search parameter to get data fields, then keep only exact matches
     data_fields_list = []
     for data_field in datafields:
-        search_results = ace.get_datafields(brain_session, region=settings_dict['region'], universe=settings_dict['universe'], delay=settings_dict['delay'], data_type='ALL', search=data_field)
+        # Optimization: Use safe_api_call and add delay to avoid rate limiting
+        search_results = safe_api_call(
+            ace.get_datafields, 
+            brain_session, 
+            region=settings_dict['region'], 
+            universe=settings_dict['universe'], 
+            delay=settings_dict['delay'], 
+            data_type='ALL', 
+            search=data_field
+        )
+        time.sleep(1) # Small delay between queries to avoid 429
+
         # Keep only exact matches in the search results
-        exact_matches = search_results[search_results['id'] == data_field]
-        if not exact_matches.empty:
-            data_fields_list.append(exact_matches)
+        if search_results is not None and not search_results.empty:
+            exact_matches = search_results[search_results['id'] == data_field]
+            if not exact_matches.empty:
+                data_fields_list.append(exact_matches)
     
     data_fields = pd.DataFrame()
     if data_fields_list:
@@ -735,7 +858,7 @@ def sort_alphas_by_fitness(alpha_ids: List[str], brain_session) -> List[str]:
 
     return sorted_alpha_ids
 
-def filter_and_fix_expressions(expression_list: List[str], region: str, universe: str, delay: int, dataset_id: str, brain_session) -> List[str]:
+def filter_and_fix_expressions(expression_list: List[str], region: str, universe: str, delay: int, dataset_id: List[str], brain_session) -> List[str]:
     """
     Method 1: Filter expressions based on valid fields and fix vector type fields.
     
@@ -744,19 +867,28 @@ def filter_and_fix_expressions(expression_list: List[str], region: str, universe
         region (str): Region code.
         universe (str): Universe code.
         delay (int): Delay value.
-        dataset_id (str): Dataset ID.
+        dataset_id (List[str]): List of Dataset IDs.
         brain_session: Authenticated BRAIN session.
         
     Returns:
         List[str]: List of filtered and fixed expressions.
     """
     # 1. Get valid datafields
-    print(f"Fetching datafields for dataset {dataset_id}...")
-    df = get_datafields_with_cache(brain_session, region=region, universe=universe, delay=delay, data_type='ALL', dataset_id=dataset_id)
-    if df is None or df.empty:
-        print(f"Error: No datafields found for dataset {dataset_id}")
+    df_list = []
+    if isinstance(dataset_id, str):
+        dataset_id = [dataset_id]
+        
+    for d_id in dataset_id:
+        print(f"Fetching datafields for dataset {d_id}...")
+        temp_df = get_datafields_with_cache(brain_session, region=region, universe=universe, delay=delay, data_type='ALL', dataset_id=d_id)
+        if temp_df is not None and not temp_df.empty:
+            df_list.append(temp_df)
+            
+    if not df_list:
+        print(f"Error: No datafields found for datasets {dataset_id}")
         return []
         
+    df = pd.concat(df_list, ignore_index=True)
     valid_field_ids = set(df['id'])
     
     fixed_expressions_list = []
@@ -793,9 +925,10 @@ def save_simulatable_alphas(expression_list: List[str], region: str, universe: s
     print(f"Entering save_simulatable_alphas with {len(expression_list)} expressions")
     # Define output path
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    output_path = os.path.join(project_root, "output", f"simulatable_alphas_{region}_{universe}_{delay}_{dataset_id}.json")
-    
+    output_path = os.path.join(project_root, "output", "pending_alpha", f"simulatable_alphas_{region}_{universe}_{delay}_{dataset_id}.json")
+    output_path2 = os.path.join(project_root, "output", "pending_alpha", f"alpha_list_{region}_{universe}_{delay}_{dataset_id}.json")
     alphas_to_save = []
+    alphas_list = []
     
     for expr in expression_list:
         alpha_entry = {
@@ -813,11 +946,13 @@ def save_simulatable_alphas(expression_list: List[str], region: str, universe: s
                 "nanHandling": "OFF",
                 "language": "FASTEXPR",
                 "visualization": False,
+                "testPeriod": "P0Y",
                 "maxTrade": max_trade
             },
             "regular": expr
         }
         alphas_to_save.append(alpha_entry)
+        alphas_list.append(expr)
         
     # Assemble into the final structure: Region -> Universe -> List of Alphas
     final_data = {
@@ -828,6 +963,8 @@ def save_simulatable_alphas(expression_list: List[str], region: str, universe: s
     
     # Ensure directory exists
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    os.makedirs(os.path.dirname(output_path2), exist_ok=True)
+
     
     # Write to file
     try:
@@ -837,176 +974,107 @@ def save_simulatable_alphas(expression_list: List[str], region: str, universe: s
     except Exception as e:
         print(f"Error saving simulatable alphas to {output_path}: {e}")
 
+    # Write to file
+    try:
+        with open(output_path2, 'w') as f:
+            json.dump(alphas_list, f, indent=4)
+        print(f"Successfully saved {len(alphas_list)} alphas to {output_path2}")
+    except Exception as e:
+        print(f"Error saving simulatable alphas to {output_path2}: {e}")
+
+
 def main():
     # 1. Load config for credentials
     brain_session = ace.start_session()
 
-    # 3. Define variables
-    expression_list = [
-        "ts_corr(fnd28_value_01551a / fnd28_value_01001a, fnd28_value_04860a / fnd28_value_01001a, 63)",
-        "(fnd28_value_04551a / fnd28_value_01551a) * (fnd28_value_04860a / fnd28_value_01001a)",
-        "ts_delta(fnd28_value_01250a / fnd28_value_01001a, 22) / ts_delay(fnd28_value_01250a / fnd28_value_01001a, 22)",
-        "fnd28_value_02501a / fnd28_value_02999a",
-        "ts_delta(-1 * (fnd28_value_03351a / fnd28_value_02999a) * (fnd28_value_04860a / fnd28_value_02999a), 63)",
-        "ts_std_dev(fnd28_value_04860a / fnd28_value_01001a, 252)",
-        "fnd28_value_01250a / fnd28_value_01001a",
-        "ts_delta(fnd28_value_01001a, 252) / ts_delay(fnd28_value_01001a, 252)",
-        "fnd28_value_03495a / fnd28_value_03501a",
-        "(fnd28_value_01551a / fnd28_value_03501a) / (fnd28_value_01551a / fnd28_value_02999a)",
-        "ts_rank(fnd28_value_01250a / fnd28_value_01001a, 63)",
-        "fnd28_value_02101a / fnd28_value_02999a",
-        "fnd28_value_01551a / fnd28_value_02999a",
-        "ts_std_dev(fnd28_value_04860a / fnd28_value_01001a, 252) / abs(ts_mean(fnd28_value_04860a / fnd28_value_01001a, 252))",
-        "ts_rank(-1 * (fnd28_value_03351a / fnd28_value_02999a) * (fnd28_value_04860a / fnd28_value_02999a), 252) - 0.5",
-        "ts_rank((fnd28_value_01250a - ts_mean(fnd28_value_01250a, 252, 1)) / ts_delay(fnd28_value_01201a, 252), 252) - 0.5",
-        "fnd28_value_01250a / fnd28_value_02999a",
-        "ts_rank(fnd28_value_01250a / fnd28_value_01001a, 252)",
-        "ts_std_dev(fnd28_value_01551a / fnd28_value_03501a, 252) / abs(ts_mean(fnd28_value_01551a / fnd28_value_03501a, 252))",
-        "fnd28_value_01551a / fnd28_value_01001a",
-        "fnd28_value_04551a / fnd28_value_03501a",
-        "fnd28_value_01250a / fnd28_value_01401a",
-        "ts_std_dev(fnd28_value_04601a / fnd28_value_01001a, 252) / abs(ts_mean(fnd28_value_04601a / fnd28_value_01001a, 252))",
-        "ts_delta(fnd28_value_01250a / fnd28_value_02999a, 63) * ts_corr(fnd28_value_04601a / fnd28_value_02999a, ts_delta(fnd28_value_01250a, 63), 126)",
-        "ts_rank(fnd28_value_04860a / fnd28_value_01001a, 63)",
-        "(fnd28_value_01001a - fnd28_value_01051a) / fnd28_value_01001a",
-        "(-1 * (fnd28_value_03351a / fnd28_value_02999a) * (fnd28_value_04860a / fnd28_value_02999a)) / ts_mean(-1 * (fnd28_value_03351a / fnd28_value_02999a) * (fnd28_value_04860a / fnd28_value_02999a), 252) - 1",
-        "ts_delta(fnd28_value_01001a / fnd28_value_02999a, 63)",
-        "ts_delta(ts_mean(fnd28_value_01551a / fnd28_value_01001a, 252), 252)",
-        "(fnd28_value_01250a / fnd28_value_01001a - ts_min(fnd28_value_01250a / fnd28_value_01001a, 252)) / (ts_max(fnd28_value_01250a / fnd28_value_01001a, 252) - ts_min(fnd28_value_01250a / fnd28_value_01001a, 252))",
-        "ts_delta(ts_delta(fnd28_value_01250a / fnd28_value_01001a, 22), 22)",
-        "fnd28_value_04860a / fnd28_value_01551a",
-        "fnd28_value_01250a * 0.7 - fnd28_value_02999a * 0.1",
-        "(fnd28_value_01250a - ts_mean(fnd28_value_01250a, 252, 1)) / ts_delay(fnd28_value_01201a, 252) * ts_rank(fnd28_value_01201a / fnd28_value_01001a, 252)",
-        "fnd28_value_03351a / fnd28_value_02999a",
-        "ts_std_dev(fnd28_value_01250a / fnd28_value_01001a, 252) / abs(ts_mean(fnd28_value_01250a / fnd28_value_01001a, 252))",
-        "-1 * (fnd28_value_03351a / fnd28_value_02999a) * ts_rank(fnd28_value_04860a / fnd28_value_02999a, 126) * (fnd28_value_02001a / fnd28_value_03101a)",
-        "ts_delta(fnd28_value_04860a, 252) / ts_delay(fnd28_value_04860a, 252)",
-        "(fnd28_value_04860a - fnd28_value_01551a) / fnd28_value_01001a",
-        "fnd28_value_04860a - fnd28_value_04601a",
-        "fnd28_value_04860a / fnd28_value_03351a",
-        "ts_std_dev(fnd28_value_02001a / fnd28_value_03101a, 252) / abs(ts_mean(fnd28_value_02001a / fnd28_value_03101a, 252))",
-        "fnd28_value_01001a / fnd28_value_01084a",
-        "(ts_delta(fnd28_value_01001a, 252) - ts_delta(fnd28_value_02502a, 252)) / ts_delay(fnd28_value_01001a, 252) * ts_corr(fnd28_value_04860a, fnd28_value_01551a, 63)",
-        "(fnd28_value_04860a / fnd28_value_01551a - ts_mean(fnd28_value_04860a / fnd28_value_01551a, 252)) / ts_std_dev(fnd28_value_04860a / fnd28_value_01551a, 252)",
-        "(fnd28_value_04860a - fnd28_value_01551a) / ts_std_dev(fnd28_value_04860a, 252)",
-        "fnd28_value_01250a / fnd28_value_01001a - ts_min(fnd28_value_01250a / fnd28_value_01001a, 252)",
-        "(fnd28_value_01201a / fnd28_value_01001a - ts_mean(fnd28_value_01201a / fnd28_value_01001a, 252)) / ts_std_dev(fnd28_value_01201a / fnd28_value_01001a, 252)",
-        "fnd28_value_02001a / fnd28_value_02999a",
-        "((fnd28_value_01250a - ts_mean(fnd28_value_01250a, 252, 1)) / ts_delay(fnd28_value_01201a, 252)) * ((ts_delta(fnd28_value_01001a, 252) - ts_delta(fnd28_value_02502a, 252)) / ts_delay(fnd28_value_01001a, 252))",
-        "fnd28_value_01201a / fnd28_value_01001a",
-        "ts_sum(fnd28_value_01201a, 1008) / fnd28_value_02999a",
-        "fnd28_value_02001a / fnd28_value_03101a",
-        "(fnd28_value_02001a + fnd28_value_02051a) / fnd28_value_02999a - (fnd28_value_02501a + fnd28_value_02502a) / fnd28_value_02999a",
-        "ts_rank(fnd28_value_01250a / fnd28_value_01001a, 252) - 0.5",
-        "ts_delta(ts_mean(fnd28_value_01250a / fnd28_value_01001a, 22), 22)",
-        "ts_corr(fnd28_value_01250a / fnd28_value_01001a, fnd28_value_04860a / fnd28_value_01001a, 63)",
-        "ts_delta((fnd28_value_01250a - ts_mean(fnd28_value_01250a, 252, 1)) / ts_delay(fnd28_value_01201a, 252), 63)",
-        "fnd28_value_01551a / fnd28_value_03501a",
-        "fnd28_value_04860a / fnd28_value_04551a",
-        "ts_std_dev(ts_delta(fnd28_value_01551a, 252) / ts_delay(fnd28_value_01551a, 252), 252) / abs(ts_mean(ts_delta(fnd28_value_01551a, 252) / ts_delay(fnd28_value_01551a, 252), 252))",
-        "ts_std_dev((fnd28_value_01001a - fnd28_value_01051a) / fnd28_value_01001a, 252) / abs(ts_mean((fnd28_value_01001a - fnd28_value_01051a) / fnd28_value_01001a, 252))",
-        "ts_delta(fnd28_value_01250a / fnd28_value_02999a, 63) * (fnd28_value_04860a / fnd28_value_04601a)",
-        "ts_max(fnd28_value_01250a / fnd28_value_01001a, 252) - fnd28_value_01250a / fnd28_value_01001a",
-        "(fnd28_value_02001a + fnd28_value_02051a) / fnd28_value_03101a",
-        "ts_std_dev(fnd28_value_03351a / fnd28_value_02999a, 252)",
-        "ts_std_dev(fnd28_value_01201a / fnd28_value_01001a, 252) / abs(ts_mean(fnd28_value_01201a / fnd28_value_01001a, 252))",
-        "((ts_delta(fnd28_value_01001a, 252) - ts_delta(fnd28_value_02502a, 252)) / ts_delay(fnd28_value_01001a, 252)) * (fnd28_value_04860a / fnd28_value_01001a)",
-        "ts_rank(fnd28_value_01250a / fnd28_value_02999a, 63)",
-        "fnd28_value_01250a / fnd28_value_01001a - ts_mean(fnd28_value_01250a / fnd28_value_01001a, 252)",
-        "(fnd28_value_01250a - ts_mean(fnd28_value_01250a, 252, 1)) / ts_delay(fnd28_value_01201a, 252)",
-        "(fnd28_value_01250a / fnd28_value_01001a) * ((ts_delta(fnd28_value_01001a, 252) - ts_delta(fnd28_value_02502a, 252)) / ts_delay(fnd28_value_01001a, 252)) * (-1 * (fnd28_value_03351a / fnd28_value_02999a) * (fnd28_value_04860a / fnd28_value_02999a))",
-        "fnd28_value_01001a / fnd28_value_02999a",
-        "ts_rank((ts_delta(fnd28_value_01001a, 252) - ts_delta(fnd28_value_02502a, 252)) / ts_delay(fnd28_value_01001a, 252), 252) - 0.5",
-        "(ts_delta(fnd28_value_01001a, 252) - ts_delta(fnd28_value_02502a, 252)) / ts_delay(fnd28_value_01001a, 252)",
-        "ts_delta(fnd28_value_01250a / fnd28_value_01001a, 63)",
-        "fnd28_value_04601a / fnd28_value_01001a",
-        "(fnd28_value_04860a / fnd28_value_01001a - ts_mean(fnd28_value_04860a / fnd28_value_01001a, 252)) / ts_std_dev(fnd28_value_04860a / fnd28_value_01001a, 252)",
-        "ts_delta(fnd28_value_01551a, 252) / ts_delay(fnd28_value_01551a, 252)",
-        "ts_std_dev(fnd28_value_01551a / fnd28_value_02999a, 252) / abs(ts_mean(fnd28_value_01551a / fnd28_value_02999a, 252))",
-        "ts_delta(fnd28_value_01250a / fnd28_value_01001a, 5) - ts_delta(fnd28_value_01250a / fnd28_value_01001a, 22)",
-        "fnd28_value_01250a / fnd28_value_01084a",
-        "(fnd28_value_01250a / fnd28_value_01001a - ts_mean(fnd28_value_01250a / fnd28_value_01001a, 252)) / ts_std_dev(fnd28_value_01250a / fnd28_value_01001a, 252)",
-        "fnd28_value_04860a / fnd28_value_01001a",
-        "ts_std_dev(fnd28_value_03501a / fnd28_value_02999a, 252)",
-        "ts_delta(ts_mean(fnd28_value_01250a / fnd28_value_01001a, 22), 5) - ts_delta(ts_mean(fnd28_value_01250a / fnd28_value_01001a, 63), 22)",
-        "fnd28_value_02502a / fnd28_value_02999a",
-        "ts_std_dev(ts_delta(fnd28_value_04860a, 252) / ts_delay(fnd28_value_04860a, 252), 252) / abs(ts_mean(ts_delta(fnd28_value_04860a, 252) / ts_delay(fnd28_value_04860a, 252), 252))",
-        "ts_std_dev(fnd28_value_01151a / fnd28_value_01001a, 252) / abs(ts_mean(fnd28_value_01151a / fnd28_value_01001a, 252))",
-        "ts_delta(fnd28_value_01551a / fnd28_value_01001a, 63) / ts_delay(fnd28_value_01551a / fnd28_value_01001a, 63)",
-        "ts_delta((ts_delta(fnd28_value_01001a, 252) - ts_delta(fnd28_value_02502a, 252)) / ts_delay(fnd28_value_01001a, 252), 63)",
-        "fnd28_value_01250a / ts_mean(fnd28_value_01250a, 252)",
-        "ts_delta(ts_delta(fnd28_value_01250a / fnd28_value_01001a, 63), 63)",
-        "ts_delta(fnd28_value_01250a, 252) / ts_delay(fnd28_value_01250a, 252)",
-        "(fnd28_value_01084a / fnd28_value_01001a - ts_mean(fnd28_value_01084a / fnd28_value_01001a, 252)) / ts_std_dev(fnd28_value_01084a / fnd28_value_01001a, 252)",
-        "((ts_delta(fnd28_value_01001a, 252) - ts_delta(fnd28_value_02502a, 252)) / ts_delay(fnd28_value_01001a, 252)) / ts_mean((ts_delta(fnd28_value_01001a, 252) - ts_delta(fnd28_value_02502a, 252)) / ts_delay(fnd28_value_01001a, 252), 252) - 1",
-        "ts_std_dev(fnd28_value_03351a / fnd28_value_03501a, 252) / abs(ts_mean(fnd28_value_03351a / fnd28_value_03501a, 252))",
-        "ts_corr(fnd28_value_01250a / fnd28_value_01001a, fnd28_value_01551a / fnd28_value_01001a, 63)",
-        "ts_rank(fnd28_value_01551a / fnd28_value_03501a, 63)",
-        "ts_std_dev(fnd28_value_01551a / fnd28_value_01001a, 252)",
-        "ts_delta(fnd28_value_01250a / fnd28_value_01001a, 5) / ts_delay(fnd28_value_01250a / fnd28_value_01001a, 5)",
-        "fnd28_value_01001a / fnd28_value_02101a",
-        "fnd28_value_01250a / fnd28_value_01001a - ts_mean(fnd28_value_01250a / fnd28_value_01001a, 60)",
-        "ts_std_dev(fnd28_value_01001a / fnd28_value_02999a, 252) / abs(ts_mean(fnd28_value_01001a / fnd28_value_02999a, 252))",
-        "ts_delta(ts_delta(fnd28_value_01551a / fnd28_value_01001a, 63), 63)",
-        "ts_delta(fnd28_value_01250a / fnd28_value_01001a, 22)",
-        "fnd28_value_03351a / fnd28_value_03501a",
-        "ts_std_dev(fnd28_value_01250a / fnd28_value_01001a, 252)",
-        "ts_delta(ts_mean(fnd28_value_01250a / fnd28_value_01001a, 63), 63)",
-        "ts_std_dev(fnd28_value_01250a / fnd28_value_01001a, 60)",
-        "fnd28_value_04551a / fnd28_value_01551a",
-        "fnd28_value_04860a / fnd28_value_01250a",
-        "fnd28_value_01551a / fnd28_value_01084a",
-        "ts_rank(fnd28_value_01551a / fnd28_value_01001a, 63)",
-        "(fnd28_value_01551a / fnd28_value_03501a) / ts_std_dev(fnd28_value_01551a / fnd28_value_03501a, 252)",
-        "(fnd28_value_01551a / fnd28_value_01001a - ts_mean(fnd28_value_01551a / fnd28_value_01001a, 252)) / ts_std_dev(fnd28_value_01551a / fnd28_value_01001a, 252)",
-        "ts_std_dev(fnd28_value_04551a / fnd28_value_01551a, 252) / abs(ts_mean(fnd28_value_04551a / fnd28_value_01551a, 252))",
-        "ts_delta(ts_delta(fnd28_value_01250a / fnd28_value_01001a, 5), 5)",
-        "ts_delta(fnd28_value_01250a / fnd28_value_01001a, 22) - ts_delta(fnd28_value_01250a / fnd28_value_01001a, 63)",
-        "ts_std_dev(fnd28_value_01551a / fnd28_value_01001a, 252) / abs(ts_mean(fnd28_value_01551a / fnd28_value_01001a, 252))",
-        "fnd28_value_01001a / fnd28_value_02051a",
-        "((fnd28_value_01250a - ts_mean(fnd28_value_01250a, 252, 1)) / ts_delay(fnd28_value_01201a, 252)) / ts_mean((fnd28_value_01250a - ts_mean(fnd28_value_01250a, 252, 1)) / ts_delay(fnd28_value_01201a, 252), 252) - 1",
-        "(fnd28_value_01250a / fnd28_value_01001a) / ts_mean(fnd28_value_01250a / fnd28_value_01001a, 252) - 1",
-        "ts_std_dev(ts_delta(fnd28_value_01001a, 252) / ts_delay(fnd28_value_01001a, 252), 252) / abs(ts_mean(ts_delta(fnd28_value_01001a, 252) / ts_delay(fnd28_value_01001a, 252), 252))",
-        "ts_delta(ts_delta((ts_delta(fnd28_value_01001a, 252) - ts_delta(fnd28_value_02502a, 252)) / ts_delay(fnd28_value_01001a, 252), 63), 63)"
-    ]
-    region = "HKG"
-    universe = "TOP800"
+    # 2. Define region, universe, delay
+    region = "ASI"
+    universe = "MINVOL1M"
     delay = 1
-    dataset_id = "fundamental28" # Example dataset ID
-    decay = 20
+
+    # 3. 指定要查询的类别 (Categories)
+    # 您只需要在此处手动输入类别，例如 ["analyst", "fundamental"]
+    categories_to_query = ["risk"]
+    
+    dataset_ids = []
+    default_params = {
+        'delay': delay,
+        'instrumentType': 'EQUITY',
+        'limit': 30,
+        'offset': 0,
+        'region': region,
+        'universe': universe,
+    }
+
+    print(f"Fetching dataset IDs for categories: {categories_to_query} in {region} {universe}...")
+    for category in categories_to_query:
+        params = default_params.copy()
+        params['category'] = category
+        results_df = fetch_data(brain_session, params)
+        if not results_df.empty:
+            # 提取该类别下的所有 dataset ID
+            category_ids = results_df['id'].tolist()
+            dataset_ids.extend(category_ids)
+            print(f"类别 '{category}' 找到 {len(category_ids)} 个数据集")
+        else:
+            print(f"类别 '{category}' 未返回数据")
+
+    # 拼上 pv1 得到完整的 dataset_id 列表
+    if 'pv1' not in dataset_ids:
+        dataset_ids.append('pv1')
+    if 'model77' not in dataset_ids:
+        dataset_ids.append('model77')
+    
+    # 去重
+    dataset_id_list = list(set(dataset_ids))
+    print(f"总共生成了 {len(dataset_id_list)} 个唯一的 dataset_id: {dataset_id_list}")
+
+    # 4. Define alpha source and other variables
+    # 此处路径需根据实际情况调整
+    alpha_source_path = '/Users/tianyuan/.claude/skills/brain-feature-implementation/data/ts_corr_elements_combinations.json'
+    expression_list = sample_alphas_from_file(alpha_source_path, 1)
+    
+    decay = 10
     neutralization = "REVERSION_AND_MOMENTUM"
     truncation = 0.01
     max_trade = "OFF"
 
+    if not expression_list:
+        print(f"No expressions found in {alpha_source_path}. Exiting.")
+        return
+
     print(f"Processing {len(expression_list)} expressions...")
 
-    # 4. Filter and fix expressions
+    # 5. Filter and fix expressions
     print("Calling filter_and_fix_expressions...")
     fixed_expressions = filter_and_fix_expressions(
         expression_list=expression_list,
         region=region,
         universe=universe,
         delay=delay,
-        dataset_id=dataset_id,
+        dataset_id=dataset_id_list,
         brain_session=brain_session
     )
 
     print(f"Filtered and fixed {len(fixed_expressions)} expressions.")
 
-    # 5. Save simulatable alphas
+    # 6. Save simulatable alphas
+    # 使用第一个非 pv1 的类别名称或 dataset_id 作为文件名标识
+    filename_tag = categories_to_query[0] if categories_to_query else "multi"
+    
     print("Calling save_simulatable_alphas...")
     save_simulatable_alphas(
         expression_list=fixed_expressions,
         region=region,
         universe=universe,
         delay=delay,
-        dataset_id=dataset_id,
+        dataset_id=filename_tag,
         decay=decay,
         neutralization=neutralization,
         truncation=truncation,
         max_trade=max_trade
     )
-    print("Finished save_simulatable_alphas.")
+    print("Finished.")
 
 if __name__ == "__main__":
     main()
