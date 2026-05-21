@@ -15,3 +15,6 @@ openai>=1.0.0  # 添加 OpenAI Python SDK
 pydantic
 langgraph
 langchain_openai
+langchain_core
+ply>=3.0
+urllib3
