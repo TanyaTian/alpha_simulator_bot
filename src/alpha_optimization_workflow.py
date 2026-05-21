@@ -5,7 +5,7 @@ import pandas as pd
 from pydantic import BaseModel, Field, ValidationError
 from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, END
-from typing import TypedDict, List, Optional, Tuple
+from typing import TypedDict, List, Optional, Tuple, Callable
 import json
 import time
 import os
