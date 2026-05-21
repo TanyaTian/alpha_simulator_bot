@@ -5,17 +5,27 @@ from logging.handlers import TimedRotatingFileHandler
 import pytz
 
 class Logger:
-    def __init__(self, log_dir="../logs", timezone="Asia/Shanghai"):
+    _instances = {}
+
+    def __new__(cls, log_name="simulation", log_dir="../logs", timezone="Asia/Shanghai"):
+        if log_name not in cls._instances:
+            instance = super(Logger, cls).__new__(cls)
+            instance._init_logger(log_name, log_dir, timezone)
+            cls._instances[log_name] = instance
+        return cls._instances[log_name]
+
+    def _init_logger(self, log_name, log_dir, timezone):
         """
-        初始化 Logger 类，支持按天轮转日志文件，并显式指定时区。
-        - log_dir: 日志文件存储目录，默认为 "../logs"
-        - timezone: 时区名称，默认为 "Asia/Shanghai"
+        初始化 Logger 实例。
+        - log_name: 日志基础文件名
+        - log_dir: 日志文件存储目录
+        - timezone: 时区名称
         """
         # 确保日志目录存在
         os.makedirs(log_dir, exist_ok=True)
 
-        # 设置日志文件路径（基础文件名，不含日期）
-        log_file_base = os.path.join(log_dir, "simulation.log")
+        # 设置日志文件路径
+        log_file_base = os.path.join(log_dir, f"{log_name}.log")
 
         # 创建 TimedRotatingFileHandler，按天轮转
         handler = TimedRotatingFileHandler(
@@ -37,7 +47,7 @@ class Logger:
                 dt = datetime.fromtimestamp(record.created, self.tz)
                 return dt.strftime(datefmt or "%Y-%m-%d %H:%M:%S,%f") + f" {self.tz.zone}"
 
-        # 设置日志格式（包含毫秒和时区）
+        # 设置日志格式
         log_format = "%(asctime)s - %(levelname)s - %(name)s - %(message)s"
         formatter = TimezoneFormatter(log_format, timezone)
         handler.setFormatter(formatter)
@@ -47,11 +57,15 @@ class Logger:
         console_handler.setFormatter(formatter)
 
         # 创建 logger 实例
-        self.logger = logging.getLogger("AlphaSimulatorBot")
-        self.logger.setLevel(logging.INFO)  # 设置默认日志级别
-        self.logger.handlers.clear()  # 清除现有处理器，避免重复
+        self.logger = logging.getLogger(f"AlphaSimulatorBot.{log_name}")
+        self.logger.setLevel(logging.INFO)
+        self.logger.handlers.clear()
         self.logger.addHandler(handler)
         self.logger.addHandler(console_handler)
+
+    @classmethod
+    def get_logger(cls, log_name="simulation"):
+        return cls(log_name).logger
 
     def info(self, message):
         self.logger.info(message)
@@ -63,5 +77,4 @@ class Logger:
         self.logger.warning(message)
     
     def debug(self, message):
-        """记录 DEBUG 级别的日志"""
         self.logger.debug(message)

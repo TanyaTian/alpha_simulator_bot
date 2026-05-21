@@ -46,10 +46,11 @@ def validate_priority_input(priority_str):
 
 def extract_region(settings_str, row_index):
     """
-    Extract region from settings string with strict validation
+    Extract region from settings string with strict validation.
+    Supports both JSON format and Python dictionary string format.
     
     Args:
-        settings_str (str): Settings string from CSV
+        settings_str (str): Settings string from CSV or JSON
         row_index (int): Current row index for error reporting
         
     Returns:
@@ -59,12 +60,16 @@ def extract_region(settings_str, row_index):
         ValueError: If region is missing or invalid
     """
     try:
-        # Safely evaluate string to dictionary
-        settings = ast.literal_eval(settings_str)
+        # Try JSON parsing first (handles "false", "null", etc.)
+        try:
+            settings = json.loads(settings_str)
+        except json.JSONDecodeError:
+            # Fallback to Python literal evaluation (handles "False", "None", etc.)
+            settings = ast.literal_eval(settings_str)
         
         # Validate settings structure
         if not isinstance(settings, dict):
-            raise ValueError(f"Row {row_index}: Settings is not a dictionary - {settings_str}")
+            raise ValueError(f"Row {row_index}: Settings is not a dictionary")
             
         # Check for region field
         if 'region' not in settings:
@@ -78,7 +83,7 @@ def extract_region(settings_str, row_index):
             
         return region
         
-    except (SyntaxError, ValueError) as e:
+    except (SyntaxError, ValueError, TypeError) as e:
         raise ValueError(f"Row {row_index}: Failed to parse settings - {str(e)}")
 
 def read_csv_file(file_path):
@@ -116,13 +121,40 @@ def read_json_file(file_path):
     with open(file_path, 'r') as f:
         data = json.load(f)
     
-    for region, universes in data.items():
-        for universe, alpha_list in universes.items():
-            for alpha in alpha_list:
+    if isinstance(data, list):
+        # Handle flat list format
+        for alpha in data:
+            if isinstance(alpha, dict):
                 # Ensure settings is a string for consistency
-                alpha['settings'] = json.dumps(alpha.get('settings', {}))
-                alpha['region'] = region  # Add region to the alpha dict
+                settings_val = alpha.get('settings')
+                if isinstance(settings_val, dict):
+                    # Extract region before converting to string to avoid parsing later
+                    if 'region' in settings_val:
+                        alpha['region'] = settings_val['region']
+                    alpha['settings'] = json.dumps(settings_val)
+                elif isinstance(settings_val, str):
+                    # If it's already a string, we'll let main()'s extract_region handle it
+                    pass
+                elif settings_val is None:
+                    alpha['settings'] = json.dumps({})
                 alphas.append(alpha)
+    elif isinstance(data, dict):
+        # Handle original hierarchical format
+        for region, universes in data.items():
+            if isinstance(universes, dict):
+                for universe, alpha_list in universes.items():
+                    if isinstance(alpha_list, list):
+                        for alpha in alpha_list:
+                            # Ensure settings is a string for consistency
+                            alpha['settings'] = json.dumps(alpha.get('settings', {}))
+                            alpha['region'] = region  # Add region to the alpha dict
+                            alphas.append(alpha)
+            elif isinstance(universes, list):
+                # Support direct region -> alpha_list structure
+                for alpha in universes:
+                    alpha['settings'] = json.dumps(alpha.get('settings', {}))
+                    alpha['region'] = region
+                    alphas.append(alpha)
                 
     random.shuffle(alphas)
     return alphas
@@ -206,7 +238,7 @@ if __name__ == '__main__':
 
 # Single priority
 #python src/import_alpha_csv.py path/to/alphas.csv --priority 0
-#python src/import_alpha_csv.py /Users/tianyuan/repos/alpha_simulator_bot/output/simulatable_alphas_HKG_TOP800_1_fundamental28.json --priority 2
+#python src/import_alpha_csv.py  /Users/tianyuan/repos/alpha_simulator_bot/output/pending_alpha/simulatable_alphas_USA_TOP3000_1_fundamental.json --priority 2
 
 # Priority range
 #python src\import_alpha_csv.py D:\repos\consultant\consultant\output\ind_delay_cap_alphas.csv --priority 2-11

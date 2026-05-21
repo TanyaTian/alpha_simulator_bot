@@ -169,17 +169,17 @@ class SASimulator:
             stats = result.get("stats")
             is_stats = result.get("is_stats")
             
-            # 检查模拟是否成功 - 与 super_alpha_simulation_flow.py 保持一致
-            if is_tests is None or not isinstance(is_tests, pd.DataFrame) or stats is None or not isinstance(stats, pd.DataFrame) or is_stats is None or not isinstance(is_stats, pd.DataFrame):
+            # 检查模拟是否成功 - 更加严谨的检查
+            if (is_tests is None or not isinstance(is_tests, pd.DataFrame) or is_tests.empty or
+                stats is None or not isinstance(stats, pd.DataFrame) or stats.empty or
+                is_stats is None or not isinstance(is_stats, pd.DataFrame) or is_stats.empty):
                 self.logger.error(f"Could not retrieve complete test results for alpha {alpha_id}")
-                # 这个alpha没有完整的测试结果，但任务已经标记为completed
                 continue
             
             # 筛选条件 (基于 super_alpha_simulation_flow.py 的逻辑)
-            # 检查 is_stats 是否为 DataFrame 并且包含必要的列
-            if is_stats is not None and isinstance(is_stats, pd.DataFrame) and 'sharpe' in is_stats.columns and 'fitness' in is_stats.columns:
-                sharpe_value = is_stats['sharpe'].iloc[0] if not is_stats.empty else 0
-                fitness_value = is_stats['fitness'].iloc[0] if not is_stats.empty else 0
+            if 'sharpe' in is_stats.columns and 'fitness' in is_stats.columns:
+                sharpe_value = is_stats['sharpe'].iloc[0]
+                fitness_value = is_stats['fitness'].iloc[0]
                 
                 # 合格条件: Sharpe和Fitness都大于4
                 if sharpe_value > 4 and fitness_value > 4:
@@ -188,6 +188,11 @@ class SASimulator:
                     # 检查 is_tests 中是否包含 FAIL
                     if 'result' in is_tests.columns and (is_tests['result'] == 'FAIL').any():
                         self.logger.info(f"Alpha {alpha_id}: is_tests 中包含 FAIL，不合格。")
+                        continue
+
+                    # 检查 stats 是否包含 sharpe 列
+                    if 'sharpe' not in stats.columns:
+                        self.logger.info(f"Alpha {alpha_id}: stats 中不包含 sharpe 列，不合格。")
                         continue
 
                     # 检查 sharpe_non_zero_years

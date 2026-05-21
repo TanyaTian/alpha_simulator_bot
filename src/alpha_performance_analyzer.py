@@ -104,8 +104,7 @@ def analyze_pyramid_distribution(alphas, title):
     import os
     os.makedirs(output_dir, exist_ok=True)
 
-    current_date = datetime.now().strftime("%Y%m%d")
-    filename = f"pyramid_distribution_{title.replace(' ', '_').lower()}_{current_date}.png"
+    filename = f"pyramid_distribution_{title.replace(' ', '_').lower()}.png"
     plt.savefig(os.path.join(output_dir, filename))
     plt.close() # Close the figure to free memory
     print(f"Saved pyramid distribution chart to {os.path.join(output_dir, filename)}")
@@ -178,8 +177,7 @@ def analyze_rolling_metrics(alphas, start_date_str):
         import os
         os.makedirs(output_dir, exist_ok=True)
 
-        current_date = datetime.now().strftime("%Y%m%d")
-        filename = f"rolling_average_{metric.lower()}_{current_date}.png"
+        filename = f"rolling_average_{metric.lower()}_{start_date_str}.png"
         plt.savefig(os.path.join(output_dir, filename))
         plt.close() # Close the figure to free memory
         print(f"Saved rolling average chart to {os.path.join(output_dir, filename)}")
@@ -202,7 +200,7 @@ def main():
     sess = config_manager.get_session()
 
     all_alphas = []
-    for region in ['USA', 'ASI', 'EUR', 'GLB', 'IND']:
+    for region in ['USA', 'ASI', 'EUR', 'GLB', 'IND', 'HKG']:
         all_alphas.extend(get_submit_alphas(sess, fetch_start_date, end_date_str, region=region))
 
     if not all_alphas:
@@ -236,9 +234,9 @@ def main():
     
 
     # --- New analysis for specified period ---
-    print("\n--- Analysis for specified period (2025-11-01 to 2026-01-31) ---")
-    period_start_date_str = "2025-11-01"
-    period_end_date_str = "2026-01-31"
+    period_start_date_str = "2025-12-01"
+    period_end_date_str = "2026-02-28"
+    print(f"\n--- Analysis for specified period ({period_start_date_str} to {period_end_date_str}) ---")
 
     period_start_dt = pd.to_datetime(period_start_date_str).tz_localize('UTC')
     period_end_dt = pd.to_datetime(period_end_date_str).tz_localize('UTC') + timedelta(days=1)
@@ -266,7 +264,7 @@ def main():
         else:
             print("No Fitness data available for the period.")
 
-        analyze_pyramid_distribution(alphas_in_period, "2025-11-01_to_2026-01-31")
+        analyze_pyramid_distribution(alphas_in_period, f"{period_start_date_str}_to_{period_end_date_str}")
     
     print("\nAnalysis complete.")
 

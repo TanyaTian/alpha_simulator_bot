@@ -73,6 +73,36 @@ class PowerPollAlphaFilter:
         self.logger.info(f"[{region}] Finished sharpe_non_zero_years filtering. {len(filtered_alphas)} alphas passed.")
         return filtered_alphas
 
+    def _filter_by_returns_drawdown(self, alphas, region):
+        filtered_alphas = []
+        total_alphas = len(alphas)
+        if total_alphas == 0:
+            return []
+
+        self.logger.info(f"[{region}] Starting returns_drawdown filtering for {total_alphas} alphas.")
+        for alpha in alphas:
+            # According to get_alphas_from_data in utils.py:
+            # [alpha_id(0), exp(1), sharpe(2), turnover(3), fitness(4), margin(5), returns(6), [pyramids(7)?], drawdown(7 or 8), dateCreated, decay]
+            margin = alpha[5]
+            returns = alpha[6]
+            
+            # If pyramids exists at index 7, drawdown is at index 8. Otherwise it's at index 7.
+            # We can distinguish them because pyramids is a list and drawdown is a number.
+            if isinstance(alpha[7], list):
+                drawdown = alpha[8]
+            else:
+                drawdown = alpha[7]
+            
+            #if (margin * 100 > drawdown * 2) or (returns > drawdown and margin * 100 > drawdown):
+            if (margin * 100 > drawdown * 2) and (returns > drawdown) and (margin >= 0.001):
+                filtered_alphas.append(alpha)
+            else:
+                alpha_id = alpha[0]
+                self.logger.info(f"[{region}] Excluding alpha {alpha_id} because (margin*100={margin*100:.4f} <= drawdown*2={drawdown*2:.4f}) or (returns={returns:.4f} <= drawdown={drawdown:.4f}) or (margin={margin:.4f} < 0.001)")
+
+        self.logger.info(f"[{region}] Finished returns_drawdown filtering. {len(filtered_alphas)} alphas passed.")
+        return filtered_alphas
+
     def get_alphas_by_datetime(self, datetime_str, per_page=1000):
         """
         根据日期时间从API获取原始alpha数据行（自动分页获取所有数据）
@@ -138,7 +168,7 @@ class PowerPollAlphaFilter:
         return all_alphas
     
     def generate_ppac_gold_bags(self, date, keywords_to_exclude, os_alpha_ids, os_alpha_rets):
-        regions = ['USA', 'CHN', 'GLB', 'EUR', 'ASI', 'IND']
+        regions = ['USA', 'CHN', 'GLB', 'EUR', 'ASI', 'IND', 'HKG']
         stone_bag_atom = {}
         stone_bag_hp = {}
         ppa_tracker_atom_all = []
@@ -159,6 +189,7 @@ class PowerPollAlphaFilter:
                 single_data_set_filter=True
             )
             ppa_tracker_atom = self._filter_by_sharpe_non_zero_years(ppa_tracker_atom_unfiltered, region)
+            ppa_tracker_atom = self._filter_by_returns_drawdown(ppa_tracker_atom, region)
             ppa_tracker_atom_all.extend(ppa_tracker_atom)
             region_bag_atom = [
                 alpha[0] for alpha in ppa_tracker_atom 
@@ -169,13 +200,14 @@ class PowerPollAlphaFilter:
             # hp 筛选
             ppa_tracker_hp_unfiltered = get_alphas_from_data(
                 data_rows, 
-                min_sharpe=1.2, 
-                min_fitness=1.0, 
+                min_sharpe=1.4, 
+                min_fitness=0.9, 
                 mode="submit", 
                 region_filter=region, 
                 single_data_set_filter=None
             )
             ppa_tracker_hp = self._filter_by_sharpe_non_zero_years(ppa_tracker_hp_unfiltered, region)
+            ppa_tracker_hp = self._filter_by_returns_drawdown(ppa_tracker_hp, region)
             ppa_tracker_hp_all.extend(ppa_tracker_hp)
             region_bag_hp = [
                 alpha[0] for alpha in ppa_tracker_hp 
@@ -263,8 +295,8 @@ class PowerPollAlphaFilter:
             self.logger.info(f"\n✅ Results saved to: {output_file_path}\n")
 
         # 生成 CSV 文件
-        output_file_atom = f"output/ppac_atom_gold_bag.csv.{date}"
-        output_file_hp = f"output/ppac_hp_gold_bag.csv.{date}"
+        output_file_atom = f"output/ppa_gold_bag/ppac_atom_gold_bag.csv.{date}"
+        output_file_hp = f"output/ppa_gold_bag/ppac_hp_gold_bag.csv.{date}"
         
         self.logger.info(f"Generating ATOM gold bag for {date}")
         process_stone_bag(stone_bag_atom, output_file_atom, os_alpha_ids, os_alpha_rets, ppa_tracker_atom_all)
@@ -277,7 +309,7 @@ def main():
     logger = Logger()
     logger.info("Starting PowerPoll Alpha Filter")
 
-    datetimes = ['20260109']  # 示例日期列表
+    datetimes = ['20260419', '20260418', '20260417']  # 示例日期列表
     
     try:
         # 初始化并运行

@@ -16,6 +16,7 @@ from requests.exceptions import ConnectionError
 from http.client import RemoteDisconnected
 import ace_lib as ace
 from cached_data_fetcher import get_datafields_with_cache
+from validator import ExpressionValidator
 
 # 创建全局 Logger 实例
 logger = Logger()
@@ -493,7 +494,8 @@ def extract_datafields(expression: str, brain_session) -> set:
     operator_keywords = operator_names.union(operator_params)
     
     # Manually add common BRAIN keywords/literals that are not fields
-    non_field_keywords = operator_keywords.union({'true', 'false', 'and', 'or', 'nan', 'inf'})
+    # Add driver options: gaussian, uniform, cauchy
+    non_field_keywords = operator_keywords.union({'true', 'false', 'and', 'or', 'nan', 'inf', 'gaussian', 'uniform', 'cauchy'})
 
     # print(f"Operator keywords ({len(operator_keywords)})")
     # --- 关键词集合构建完毕 ---
@@ -892,12 +894,22 @@ def filter_and_fix_expressions(expression_list: List[str], region: str, universe
     valid_field_ids = set(df['id'])
     
     fixed_expressions_list = []
+    validator = ExpressionValidator()
     
     print(f"Iterating through {len(expression_list)} expressions to validate and fix...")
     for i, expression in enumerate(expression_list):
         if i % 10 == 0:
             print(f"Processing expression {i+1}/{len(expression_list)}...")
-        # 2. Validate fields
+        
+        # 1. Syntax Validation (Check for basic syntax, operators, parameters, etc.)
+        check_result = validator.check_expression(expression)
+        if not check_result['valid']:
+            print(f"❌ Syntax error in expression: {expression}")
+            for error in check_result['errors']:
+                print(f"   - {error}")
+            continue
+
+        # 2. Validate fields (Check if datafields exist in the target datasets)
         is_valid, _ = validate_expression_fields(expression, valid_field_ids, brain_session)
         
         if is_valid:
@@ -988,13 +1000,13 @@ def main():
     brain_session = ace.start_session()
 
     # 2. Define region, universe, delay
-    region = "ASI"
-    universe = "MINVOL1M"
+    region = "USA"
+    universe = "TOP3000"
     delay = 1
 
     # 3. 指定要查询的类别 (Categories)
     # 您只需要在此处手动输入类别，例如 ["analyst", "fundamental"]
-    categories_to_query = ["risk"]
+    categories_to_query = ["fundamental"]
     
     dataset_ids = []
     default_params = {
@@ -1022,8 +1034,6 @@ def main():
     # 拼上 pv1 得到完整的 dataset_id 列表
     if 'pv1' not in dataset_ids:
         dataset_ids.append('pv1')
-    if 'model77' not in dataset_ids:
-        dataset_ids.append('model77')
     
     # 去重
     dataset_id_list = list(set(dataset_ids))
@@ -1031,9 +1041,15 @@ def main():
 
     # 4. Define alpha source and other variables
     # 此处路径需根据实际情况调整
-    alpha_source_path = '/Users/tianyuan/.claude/skills/brain-feature-implementation/data/ts_corr_elements_combinations.json'
+    alpha_source_path = '/Users/tianyuan/repos/APP/Tranformer/output/Alpha_generated_expressions_success.json'
     expression_list = sample_alphas_from_file(alpha_source_path, 1)
     
+    # 如果需要筛选包含特定字符串的 alpha，可以在此设置 substring
+    target_substring = "fnd17"
+    if target_substring:
+        expression_list = [e for e in expression_list if target_substring in e]
+        print(f"Filtered to {len(expression_list)} alphas containing '{target_substring}'")
+
     decay = 10
     neutralization = "REVERSION_AND_MOMENTUM"
     truncation = 0.01

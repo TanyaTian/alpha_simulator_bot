@@ -17,7 +17,7 @@ class AlphaSignalFactory:
             "ts_arg_min", "ts_arg_max", "ts_scale", "ts_quantile",
             "ts_kurtosis", "ts_product", "ts_returns"]
         
-    def process_signals(self, date_time, priority=5, mode='normal', operator_type='all', margin_limit=0.0):
+    def process_signals(self, date_time, priority=5, mode='normal', operator_type='all', margin_limit=0.0, sharpe_limit=0.0, fitness_limit=0.0):
         """
         处理信号，优化并存储为待模拟的alpha
         
@@ -27,6 +27,8 @@ class AlphaSignalFactory:
             mode: 处理模式，'test'为测试模式，'normal'为正常模式
             operator_type: 算子类型，'ts'为时间序列，'group'为分组，'all'为两者都添加
             margin_limit: margin限制，过滤掉In-Sample margin小于该值的alpha
+            sharpe_limit: sharpe限制，过滤掉In-Sample sharpe小于该值的alpha
+            fitness_limit: fitness限制，过滤掉In-Sample fitness小于该值的alpha
         """
         self.session = check_session_and_relogin(self.session)
         signal_optimize_set = {}
@@ -57,11 +59,22 @@ class AlphaSignalFactory:
             if not code:
                 continue
             
-            # margin 过滤
+            # 统计数据过滤
             is_stats = details.get('is', {})
             margin = is_stats.get('margin', 0)
+            sharpe = is_stats.get('sharpe', 0)
+            fitness = is_stats.get('fitness', 0)
+
             if margin < margin_limit:
                 self.logger.info(f"Alpha {alpha_id} filtered: margin {margin} < {margin_limit}")
+                continue
+            
+            if sharpe < sharpe_limit:
+                self.logger.info(f"Alpha {alpha_id} filtered: sharpe {sharpe} < {sharpe_limit}")
+                continue
+
+            if fitness < fitness_limit:
+                self.logger.info(f"Alpha {alpha_id} filtered: fitness {fitness} < {fitness_limit}")
                 continue
             
             settings = details.get('settings', {})
@@ -415,11 +428,6 @@ class AlphaSignalFactory:
         usa_atom_group = ["market", "sector", "industry", "subindustry", "exchange"]
         
         asi_atom_group = ["market", "sector", "industry", "subindustry", "exchange", "country",
-                        "group_cartesian_product(country, market)", 
-                        "group_cartesian_product(country, industry)", 
-                        "group_cartesian_product(country, subindustry)", 
-                        "group_cartesian_product(country, exchange)",
-                        "group_cartesian_product(country, sector)",
                         nlvolcap_group, mktcappera_group, share_count_group,
                         cap_group, sector_cap_group]
         
@@ -549,7 +557,7 @@ def main():
     """
     主函数,用于从命令行调用生成优化alpha并插入数据库
     """
-    dates = ['20260511']  # 示例日期列表
+    dates = ['20260512']  # 示例日期列表
     # 设置日志
     logger = Logger()
     logger.info("Starting Alpha Signal Factory")
@@ -559,7 +567,7 @@ def main():
             # 创建工厂对象并运行
             factory = AlphaSignalFactory()
             # 示例：仅添加 TS 算子，且 margin >= 0.05
-            factory.process_signals(date_time=date, priority=1, mode='normal', operator_type='group', margin_limit=0.0)
+            factory.process_signals(date_time=date, priority=1, mode='normal', operator_type='group', margin_limit=0.0015, sharpe_limit=1.45, fitness_limit=0.9)
             logger.info("✅ Alpha signal processing completed successfully")
         except Exception as e:
             logger.error(f"❌ Alpha signal processing failed: {str(e)}")
