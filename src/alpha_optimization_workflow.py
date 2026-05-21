@@ -430,7 +430,7 @@ def _check_correlations(session, alpha_id: str):
 def fetch_seed_details(state: WorkflowState) -> WorkflowState:
     """获取初始种子 Alpha 信息及周边知识"""
     if state.get("status_callback"):
-        state["status_callback"]("获取种子详情及周边知识")
+        state["status_callback"]("Fetching seed details and related knowledge")
 
     iteration = state.get('iteration_count', 0)
     hist_alphas = state.get('historical_alphas', [])
@@ -510,7 +510,7 @@ def fetch_seed_details(state: WorkflowState) -> WorkflowState:
 def propose_and_generate_batch(state: WorkflowState) -> WorkflowState:
     """调用 LLM 生成 20 个 Alpha 表达式变体"""
     if state.get("status_callback"):
-        state["status_callback"]("调用 LLM 生成变体")
+        state["status_callback"]("Calling LLM to generate variants")
     logger.info("--- Proposing and generating alpha batch via LLM ---")
 
     session = ace_lib.check_session_and_relogin(state["session"])
@@ -698,7 +698,7 @@ def propose_and_generate_batch(state: WorkflowState) -> WorkflowState:
 def batch_validate_and_process(state: WorkflowState) -> WorkflowState:
     """批量验证表达式合法性、字段存在性并进行类型自动补全"""
     if state.get("status_callback"):
-        state["status_callback"](f"正在验证 {len(state['proposed_alphas'])} 个候选表达式")
+        state["status_callback"](f"Validating {len(state['proposed_alphas'])} candidate expressions")
     logger.info(f"--- Validating {len(state['proposed_alphas'])} candidates ---")
 
     session = state["session"]
@@ -768,7 +768,7 @@ def batch_validate_and_process(state: WorkflowState) -> WorkflowState:
 def batch_simulate_and_select_best(state: WorkflowState) -> WorkflowState:
     """批量提交模拟、收集结果、更新历史、选出最优"""
     if state.get("status_callback"):
-        state["status_callback"](f"正在批量模拟并优选 (当前共 {len(state['valid_candidates'])} 个)")
+        state["status_callback"](f"Simulating and selecting best candidates (total: {len(state['valid_candidates'])})")
     logger.info("--- Batch simulating and selecting best ---")
 
     session = ace_lib.check_session_and_relogin(state["session"])
