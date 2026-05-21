@@ -300,13 +300,13 @@ def _get_performance_report(session, seed_alpha_id: str, state: WorkflowState) -
         # 如果所有检查都是 PASS，额外调用平台 API 计算真实相关性
         if not fail_names:
             corr_parts = []
-            prod_corr_result = utils.safe_api_call(ace_lib.check_prod_corr_test, session, alpha_id=seed_alpha_id)
+            prod_corr_result = utils.safe_api_call(ace_lib.check_prod_corr_test, session, alpha_id=seed_alpha_id, call_timeout=900)
             if prod_corr_result is not None and not prod_corr_result.empty:
                 pc = prod_corr_result['value'].max()
                 corr_parts.append(f"name:PROD_CORRELATION,result:{'PASS' if pc < 0.7 else 'FAIL'},limit:0.7,value:{pc:.4f}")
                 if pc >= 0.7:
                     fail_names.append('PROD_CORRELATION')
-            self_corr_result = utils.safe_api_call(ace_lib.check_self_corr_test, session, alpha_id=seed_alpha_id)
+            self_corr_result = utils.safe_api_call(ace_lib.check_self_corr_test, session, alpha_id=seed_alpha_id, call_timeout=900)
             if self_corr_result is not None and not self_corr_result.empty:
                 sc = self_corr_result['value'].max()
                 corr_parts.append(f"name:SELF_CORRELATION,result:{'PASS' if sc < 0.5 else 'FAIL'},limit:0.5,value:{sc:.4f}")
@@ -462,7 +462,7 @@ def _check_correlations(session, alpha_id: str):
     corr_values = {"pc": 0.0, "sc": 0.0, "ppc": 0.0}
 
     # Production correlation
-    prod_corr_result = utils.safe_api_call(ace_lib.check_prod_corr_test, session, alpha_id=alpha_id)
+    prod_corr_result = utils.safe_api_call(ace_lib.check_prod_corr_test, session, alpha_id=alpha_id, call_timeout=900)
     pc = prod_corr_result['value'].max() if prod_corr_result is not None and not prod_corr_result.empty else 1.0
     corr_values["pc"] = pc
     logger.info(f"Alpha {alpha_id} - Production correlation: {pc:.4f}")
@@ -471,7 +471,7 @@ def _check_correlations(session, alpha_id: str):
         return False, corr_values
 
     # Self correlation
-    self_corr_result = utils.safe_api_call(ace_lib.check_self_corr_test, session, alpha_id=alpha_id)
+    self_corr_result = utils.safe_api_call(ace_lib.check_self_corr_test, session, alpha_id=alpha_id, call_timeout=900)
     sc = self_corr_result['value'].max() if self_corr_result is not None and not self_corr_result.empty else 1.0
     corr_values["sc"] = sc
     logger.info(f"Alpha {alpha_id} - Self correlation: {sc:.4f}")
@@ -480,7 +480,7 @@ def _check_correlations(session, alpha_id: str):
         return False, corr_values
 
     # Power pool correlation
-    ppc_result = utils.safe_api_call(ace_lib_ext.check_power_pool_corr_test, session, alpha_id=alpha_id)
+    ppc_result = utils.safe_api_call(ace_lib_ext.check_power_pool_corr_test, session, alpha_id=alpha_id, call_timeout=900)
     ppc = ppc_result['value'].max() if (ppc_result is not None and not ppc_result.empty
                                          and ppc_result['value'].notna().any()) else 0.0
     corr_values["ppc"] = ppc
