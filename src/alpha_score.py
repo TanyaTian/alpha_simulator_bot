@@ -105,10 +105,13 @@ def evaluate_and_select_best_alpha(
 ) -> Optional[Dict[str, Any]]:
     """
     基于平衡权重后的务实评分系统选出最优 Alpha。
+
+    Note: 此函数会逐个请求 API 获取数据，适用于独立使用场景。
+    在有预获取数据的情况下，优先使用 select_best_from_candidates() 避免冗余 API 调用。
     """
     alpha_candidates = []
     print(f"开始评估 {len(alpha_ids)} 个 Alpha 候选者...")
-    
+
     for alpha_id in alpha_ids:
         try:
             alpha_details = utils.safe_api_call(ace_lib.get_simulation_result_json, session, alpha_id)
@@ -123,7 +126,7 @@ def evaluate_and_select_best_alpha(
                     "yearly_stats": stats_df,
                     "is": alpha_details.get("is", {})
                 }
-                
+
                 if _passes_hard_filters(candidate):
                     scores = calculate_pragmatic_score(candidate)
                     candidate["scores"] = scores
@@ -131,15 +134,44 @@ def evaluate_and_select_best_alpha(
         except Exception as e:
             print(f"获取 Alpha {alpha_id} 数据时出错: {e}")
 
+    return _select_best_from_scored(alpha_candidates)
+
+
+def select_best_from_candidates(
+    candidates: List[Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    """
+    从预获取的候选数据中选出最优 Alpha（无需额外 API 调用）。
+
+    Args:
+        candidates: 候选 Alpha 数据列表，每个元素需包含:
+            id, details, check_df, yearly_stats
+
+    Returns:
+        最优 Alpha 信息字典，或 None（无候选通过硬过滤）
+    """
+    alpha_candidates = []
+
+    for candidate in candidates:
+        if _passes_hard_filters(candidate):
+            scores = calculate_pragmatic_score(candidate)
+            candidate_copy = dict(candidate)
+            candidate_copy["scores"] = scores
+            alpha_candidates.append(candidate_copy)
+
+    return _select_best_from_scored(alpha_candidates)
+
+
+def _select_best_from_scored(
+    alpha_candidates: List[Dict[str, Any]]
+) -> Optional[Dict[str, Any]]:
+    """从已评分的候选列表中选择最优者（内部共用逻辑）"""
     if not alpha_candidates:
-        print("没有候选者通过硬过滤。")
         return None
 
     alpha_candidates.sort(key=lambda x: x["scores"]["final_score"], reverse=True)
     best_candidate = alpha_candidates[0]
-    
-    print(f"🏆 本次迭代最优 Alpha: {best_candidate['id']} | 得分: {best_candidate['scores']['final_score']:.2f} | 失败项: {best_candidate['scores']['fail_count']}")
-    
+
     return {
         "alpha_info": best_candidate,
         "scores": best_candidate["scores"],

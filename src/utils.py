@@ -12,8 +12,9 @@ from datetime import datetime
 from pytz import timezone
 from logger import Logger
 from typing import List, Tuple, Optional
-from requests.exceptions import ConnectionError
+from requests.exceptions import ConnectionError, Timeout as RequestsTimeout, ReadTimeout
 from http.client import RemoteDisconnected
+import concurrent.futures
 import ace_lib as ace
 from cached_data_fetcher import get_datafields_with_cache
 from validator import ExpressionValidator
@@ -412,17 +413,31 @@ def get_alphas_from_data(data_rows, min_sharpe, min_fitness, mode="track", regio
             
     return output
 
-def safe_api_call(func, *args, max_retries=3, initial_delay=60, **kwargs):
+def safe_api_call(func, *args, max_retries=3, initial_delay=60, call_timeout=300, **kwargs):
     """
-    Safely execute a function (usually an API call) with a retry mechanism.
-    - func: The function to execute, e.g., ace_lib.get_check_submission.
-    - *args, **kwargs: Arguments to pass to func.
+    Safely execute a function (usually an API call) with a retry mechanism
+    and per-call timeout protection.
+
+    Args:
+        func: The function to execute, e.g., ace_lib.get_check_submission.
+        *args, **kwargs: Arguments to pass to func.
+        max_retries: Maximum number of retry attempts.
+        initial_delay: Initial delay between retries in seconds.
+        call_timeout: Per-call timeout in seconds (default: 300s = 5 minutes).
     """
     delay = initial_delay
     for attempt in range(max_retries):
         try:
-            # Directly call the function and return the result
-            return func(*args, **kwargs)
+            # Execute with thread-based timeout to prevent hanging
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(func, *args, **kwargs)
+                return future.result(timeout=call_timeout)
+
+        except concurrent.futures.TimeoutError as e:
+            print(f"Warning: API call timed out after {call_timeout}s. Retrying in {delay}s... (Attempt {attempt + 1}/{max_retries})")
+
+        except (RequestsTimeout, ReadTimeout) as e:
+            print(f"Warning: API call timed out (requests): {e}. Retrying in {delay}s... (Attempt {attempt + 1}/{max_retries})")
 
         except (RemoteDisconnected, ConnectionError) as e:
             # Handle network errors
@@ -440,7 +455,7 @@ def safe_api_call(func, *args, max_retries=3, initial_delay=60, **kwargs):
         except json.JSONDecodeError as e:
             # Handle JSON parsing errors
             print(f"Warning: Failed to decode JSON response: {e}. Retrying in {delay}s... (Attempt {attempt + 1}/{max_retries})")
-        
+
         # If any of the above exceptions occur, wait and retry
         if attempt + 1 == max_retries:
             print(f"FATAL: API call failed after {max_retries} retries.")

@@ -14,7 +14,7 @@ from http.client import RemoteDisconnected
 from requests.exceptions import ConnectionError
 from llm_calls import test_llm_connection
 import concurrent.futures
-from alpha_score import evaluate_and_select_best_alpha, _passes_hard_filters
+from alpha_score import evaluate_and_select_best_alpha, select_best_from_candidates, _passes_hard_filters
 from validator import ExpressionValidator
 from cached_data_fetcher import get_datafields_with_cache
 from logger import Logger
@@ -314,13 +314,6 @@ def _get_performance_report(session, seed_alpha_id: str, state: WorkflowState) -
                     fail_names.append('SELF_CORRELATION')
             if corr_parts:
                 state["seed_performance_report"] += "\n" + "\n".join(corr_parts)
-        else:
-            # 有 FAIL 时将 WARNING 的相关性检查也视为潜在失败项
-            for corr_check in ['PROD_CORRELATION', 'SELF_CORRELATION']:
-                check_row = check_df[check_df['name'] == corr_check]
-                if not check_row.empty:
-                    if check_row.iloc[0]['result'] != 'PASS':
-                        fail_names.append(corr_check)
     else:
         state["seed_performance_report"] = f"Could not retrieve submission checks for {seed_alpha_id}."
 
@@ -977,7 +970,7 @@ def batch_simulate_and_select_best(state: WorkflowState) -> WorkflowState:
     logger.info(f"All batches processed. Results: {len(batch_results)}/{len(sim_jobs)}")
 
     # 3. 处理模拟结果
-    alpha_ids_to_evaluate = []
+    candidates_for_evaluation = []  # 收集预获取的候选数据，避免后续重复 API 调用
     historical_alphas = state.get('historical_alphas', [])
     repeat_historical_alphas = state.get('repeat_historical_alphas', [])
     expressions_added_count = 0
@@ -1030,7 +1023,7 @@ def batch_simulate_and_select_best(state: WorkflowState) -> WorkflowState:
 
         stats_df = utils.safe_api_call(ace_lib.get_alpha_yearly_stats, session, alpha_id)
 
-        # 自动标记通过硬过滤的 Alpha
+        # 自动标记通过硬过滤的 Alpha，同时收集候选数据供后续评分
         if alpha_details and check_df is not None and stats_df is not None:
             candidate_for_tagging = {
                 "id": alpha_id,
@@ -1039,6 +1032,7 @@ def batch_simulate_and_select_best(state: WorkflowState) -> WorkflowState:
                 "yearly_stats": stats_df,
                 "is": alpha_details.get("is", {})
             }
+            candidates_for_evaluation.append(candidate_for_tagging)
             if _passes_hard_filters(candidate_for_tagging):
                 try:
                     if corr_values is not None:
@@ -1138,23 +1132,22 @@ def batch_simulate_and_select_best(state: WorkflowState) -> WorkflowState:
                     state["all_fields_df"] = state["all_fields_df"][
                         ~state["all_fields_df"]['id'].isin(fields_to_remove)]
 
-        alpha_ids_to_evaluate.append(alpha_id)
-
     state['historical_alphas'] = historical_alphas
     state['repeat_historical_alphas'] = repeat_historical_alphas
     if expressions_added_count > 0:
         logger.info(f"Added {expressions_added_count} new expressions. Total history: {len(historical_alphas)}")
 
-    if not alpha_ids_to_evaluate:
-        logger.info("No new alphas to evaluate.")
+    if not candidates_for_evaluation:
+        logger.info("No candidates available for evaluation.")
         if state.get('best_alpha') and state['best_alpha'].get('alpha_info'):
             state['seed_alpha_id'] = state['best_alpha']['alpha_info'].get('id', state['seed_alpha_id'])
         _log_iteration_summary(state)
-        logger.info("--- Node 'batch_simulate_and_select_best' completed (no alphas to evaluate). ---")
+        logger.info("--- Node 'batch_simulate_and_select_best' completed (no candidates to evaluate). ---")
         return state
 
-    # 4. 使用务实评分选出最优
-    best_of_batch = evaluate_and_select_best_alpha(session, alpha_ids_to_evaluate)
+    # 4. 使用务实评分选出最优（基于已获取数据，无需额外 API 调用）
+    logger.info(f"Scoring {len(candidates_for_evaluation)} candidates from pre-fetched data...")
+    best_of_batch = select_best_from_candidates(candidates_for_evaluation)
 
     if best_of_batch:
         batch_best_score = best_of_batch['scores']['final_score']
