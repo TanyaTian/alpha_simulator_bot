@@ -1103,7 +1103,7 @@ def run_optimization_workflow(seed_alpha_id: str, status_callback: Optional[Call
         包含最终状态和结果信息的字典
     """
     # 1. 测试 LLM 连接
-    if not test_llm_connection(config_name=None):
+    if not test_llm_connection():
         logger.error("LLM connection test failed.")
         return {"error": "LLM connection test failed. Check configuration and network."}
 
