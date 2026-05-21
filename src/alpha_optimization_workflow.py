@@ -25,6 +25,7 @@ logger = Logger.get_logger("optimization")
 
 # --- 文件路径常量 ---
 _KB_ROOT = "data"
+_FIELD_METADATA_CACHE_DIR = os.path.join("data", "field_metadata")
 
 FILE_PATHS = {
     "IMPROVE_METHODS": {
@@ -127,11 +128,65 @@ def _extract_field_ids_from_text(text: str) -> set:
     potential_fields = re.findall(r'\b[a-z][a-z0-9_]{3,}\b', text)
     return {f for f in potential_fields if f not in operators}
 
+def _load_field_metadata_cache(settings: dict) -> dict:
+    """Load the field metadata cache from disk."""
+    region = settings.get("region", "UNKNOWN")
+    universe = settings.get("universe", "UNKNOWN")
+    delay = settings.get("delay", 1)
+    cache_dir = os.path.join(_FIELD_METADATA_CACHE_DIR, region)
+    cache_filename = f"{universe}_{delay}.json"
+    cache_filepath = os.path.join(cache_dir, cache_filename)
+    if os.path.exists(cache_filepath):
+        try:
+            with open(cache_filepath, 'r') as f:
+                return json.load(f)
+        except Exception as e:
+            logger.warning(f"Failed to load field metadata cache {cache_filepath}: {e}")
+    return {}
+
+def _save_field_metadata_cache(settings: dict, cache: dict):
+    """Save the field metadata cache to disk."""
+    region = settings.get("region", "UNKNOWN")
+    universe = settings.get("universe", "UNKNOWN")
+    delay = settings.get("delay", 1)
+    cache_dir = os.path.join(_FIELD_METADATA_CACHE_DIR, region)
+    os.makedirs(cache_dir, exist_ok=True)
+    cache_filename = f"{universe}_{delay}.json"
+    cache_filepath = os.path.join(cache_dir, cache_filename)
+    try:
+        with open(cache_filepath, 'w') as f:
+            json.dump(cache, f, indent=2)
+        logger.info(f"Field metadata cache saved to {cache_filepath} ({len(cache)} entries)")
+    except Exception as e:
+        logger.error(f"Failed to save field metadata cache {cache_filepath}: {e}")
+
 def _fetch_field_metadata(session, field_ids: List[str], state: WorkflowState) -> pd.DataFrame:
-    """从平台获取字段元数据"""
+    """从平台获取字段元数据，优先使用文件缓存"""
     settings = state["row_setting"]
     all_results = []
-    for fid in field_ids:
+    cache_dirty = False
+    total = len(field_ids)
+
+    # Load existing cache
+    cache = _load_field_metadata_cache(settings)
+    logger.info(f"Loaded field metadata cache: {len(cache)} entries")
+
+    cached_count = 0
+    fetch_count = 0
+    for idx, fid in enumerate(field_ids):
+        # Check cache first
+        if fid in cache:
+            entry = cache[fid]
+            if entry is not None:
+                all_results.append(pd.DataFrame([entry]))
+                cached_count += 1
+                # Log progress every 20 cached items
+                if cached_count % 20 == 0:
+                    logger.info(f"[{idx+1}/{total}] Cached: {cached_count}, fetched: {fetch_count}")
+                continue
+
+        # Not in cache, fetch from API
+        logger.info(f"[{idx+1}/{total}] Fetching field: {fid} (cached: {cached_count}, fetched: {fetch_count})")
         try:
             df = utils.safe_api_call(ace_lib.get_datafields, session,
                                      region=settings.get("region"),
@@ -141,9 +196,26 @@ def _fetch_field_metadata(session, field_ids: List[str], state: WorkflowState) -
             if df is not None and not df.empty:
                 exact_match = df[df['id'] == fid]
                 if not exact_match.empty:
-                    all_results.append(exact_match)
+                    record = exact_match.iloc[0].to_dict()
+                    all_results.append(pd.DataFrame([record]))
+                    cache[fid] = record
+                    cache_dirty = True
+                    fetch_count += 1
+                else:
+                    # Field not found on platform, cache as None to avoid repeated lookups
+                    cache[fid] = None
+                    cache_dirty = True
+            else:
+                cache[fid] = None
+                cache_dirty = True
         except Exception as e:
             logger.error(f"Error fetching field {fid}: {e}")
+
+    # Persist cache if any new entries were added
+    if cache_dirty:
+        _save_field_metadata_cache(settings, cache)
+
+    logger.info(f"Field metadata summary: {cached_count} from cache, {fetch_count} fetched, {total} total")
     return pd.concat(all_results, ignore_index=True).drop_duplicates(subset=['id']) if all_results else pd.DataFrame()
 
 def _verify_and_load_region_fields(session, fields: set, state: WorkflowState):
@@ -429,6 +501,7 @@ def _check_correlations(session, alpha_id: str):
 
 def fetch_seed_details(state: WorkflowState) -> WorkflowState:
     """获取初始种子 Alpha 信息及周边知识"""
+    logger.info("--- Starting node 'fetch_seed_details' ---")
     if state.get("status_callback"):
         state["status_callback"]("Fetching seed details and related knowledge")
 
@@ -501,6 +574,7 @@ def fetch_seed_details(state: WorkflowState) -> WorkflowState:
                 'turnover': is_stats.get('turnover', 0)
             }
 
+    logger.info("--- Node 'fetch_seed_details' completed. ---")
     return state
 
 # ========================================================================
@@ -509,6 +583,7 @@ def fetch_seed_details(state: WorkflowState) -> WorkflowState:
 
 def propose_and_generate_batch(state: WorkflowState) -> WorkflowState:
     """调用 LLM 生成 20 个 Alpha 表达式变体"""
+    logger.info("--- Starting node 'propose_and_generate_batch' ---")
     if state.get("status_callback"):
         state["status_callback"]("Calling LLM to generate variants")
     logger.info("--- Proposing and generating alpha batch via LLM ---")
@@ -538,6 +613,7 @@ def propose_and_generate_batch(state: WorkflowState) -> WorkflowState:
     except FileNotFoundError as e:
         state["status"] = "failed"
         state["error_log"].append(f"FATAL: Could not read prompt file: {e}")
+        logger.info("--- Node 'propose_and_generate_batch' completed (failed to read prompt). ---")
         return state
 
     # 3. 准备数据字段样本
@@ -547,6 +623,19 @@ def propose_and_generate_batch(state: WorkflowState) -> WorkflowState:
         datafields_sample = fields_df.sample(n=sample_size)[['id', 'description']].to_string(index=False)
     else:
         datafields_sample = "No data fields available."
+
+    # 3.5 提取种子表达式中的字段，用于在 Prompt 中显式告知 LLM 保留这些字段
+    seed_expression = state.get('seed_expression', '')
+    if seed_expression:
+        try:
+            seed_fields = utils.extract_datafields(seed_expression, session)
+            seed_fields_list = sorted(seed_fields)
+            logger.info(f"Seed expression fields to preserve: {seed_fields_list}")
+        except Exception as e:
+            seed_fields_list = []
+            logger.warning(f"Failed to extract seed expression fields: {e}")
+    else:
+        seed_fields_list = []
 
     # 4. 历史记录
     hist_list = state.get('historical_alphas', [])
@@ -600,18 +689,26 @@ def propose_and_generate_batch(state: WorkflowState) -> WorkflowState:
         "## 6. Available Data Fields (Sample)\n",
         "Use these exact field IDs in your expressions:\n",
         f"```\n{datafields_sample}\n```\n\n",
-        "## 7. Optimization Targets\n",
+        "## 7. CRITICAL: Data Field Preservation Rule\n",
+        f"The seed expression in Section 1 uses these exact field IDs: {', '.join(seed_fields_list) if seed_fields_list else '(none)'}\n",
+        "These field IDs MUST be preserved in your variants. The task is to optimize the expression by modifying "
+        "operators, parameters, window sizes, neutralization methods, and expression structure — "
+        "NOT by substituting data fields with different field IDs from the Available Data Fields list.\n"
+        "Replacing a seed field with a different field ID changes the fundamental signal and defeats "
+        "the purpose of optimization. Only replace a field ID if you have a specific, well-justified reason "
+        "and you clearly explain it in your reasoning.\n\n",
+        "## 8. Optimization Targets\n",
         "When proposing variants, please prioritize optimization goals in the following order:\n",
         "- Primary and mandatory: Resolve all 'FAIL' items listed in the Performance Metrics section.",
         "This is a prerequisite for optimization — any unresolved FAIL item is unacceptable.\n",
         "- Bonus items (optimize where possible)\n",
         "Minimize correlation metrics (pc, sc, ppc): lower correlation means the alpha is more unique and less redundant.\n",
         "Maximize margin: higher margin indicates stronger predictive signal and better profitability.\n\n",
-        "## 8. Guidelines\n",
+        "## 9. Guidelines\n",
         f"{prompt_principles}\n\n",
-        "## 9. Reference Examples\n",
+        "## 10. Reference Examples\n",
         f"{prompt_examples}\n\n",
-        "## 10. Output Format\n",
+        "## 11. Output Format\n",
         "Generate 20 expression variants. For each variant, you MUST propose a 'new_setting' dictionary with:\n",
         f"- 'neutralization': MUST be chosen from: {NEUTRALIZATION_OPTIONS}\n",
         "- 'decay': MUST be an integer between 0 and 504 (inclusive).\n",
@@ -632,8 +729,8 @@ def propose_and_generate_batch(state: WorkflowState) -> WorkflowState:
     prompt = "\n".join(prompt_parts)
 
     # 保存 Prompt 到文件便于调试
-    prompt_log_file = "logs/last_prompt_sent_to_llm.txt"
-    os.makedirs("logs", exist_ok=True)
+    prompt_log_file = "data/last_prompt_sent_to_llm.txt"
+    os.makedirs("data", exist_ok=True)
     with open(prompt_log_file, "w", encoding="utf-8") as f:
         f.write(prompt)
     logger.info(f"Prompt saved to {prompt_log_file} ({len(prompt)} chars)")
@@ -672,9 +769,12 @@ def propose_and_generate_batch(state: WorkflowState) -> WorkflowState:
 
                 logger.info(f"LLM generated {len(state['proposed_alphas'])} candidates:")
                 for i, p in enumerate(state["proposed_alphas"]):
-                    logger.info(f"  Candidate {i+1}: {p.get('reasoning')[:80]}...")
-                    logger.debug(f"    Expression: {p.get('new_expression')}")
-                    logger.debug(f"    Settings: {p.get('new_setting')}")
+                    logger.info(f"  >>> Candidate {i+1} >>>")
+                    logger.info(f"  Reasoning: {p.get('reasoning')}")
+                    logger.info(f"  Expression: {p.get('new_expression')}")
+                    logger.info(f"  Settings: {p.get('new_setting')}")
+                    logger.info(f"  <<< Candidate {i+1} <<<")
+                logger.info("--- Node 'propose_and_generate_batch' completed. ---")
                 return state
             else:
                 truncated_resp = content[:500] + "..." if len(content) > 500 else content
@@ -689,6 +789,7 @@ def propose_and_generate_batch(state: WorkflowState) -> WorkflowState:
             else:
                 time.sleep(30)
 
+    logger.info("--- Node 'propose_and_generate_batch' completed (all attempts failed). ---")
     return state
 
 # ========================================================================
@@ -697,6 +798,7 @@ def propose_and_generate_batch(state: WorkflowState) -> WorkflowState:
 
 def batch_validate_and_process(state: WorkflowState) -> WorkflowState:
     """批量验证表达式合法性、字段存在性并进行类型自动补全"""
+    logger.info("--- Starting node 'batch_validate_and_process' ---")
     if state.get("status_callback"):
         state["status_callback"](f"Validating {len(state['proposed_alphas'])} candidate expressions")
     logger.info(f"--- Validating {len(state['proposed_alphas'])} candidates ---")
@@ -759,7 +861,37 @@ def batch_validate_and_process(state: WorkflowState) -> WorkflowState:
 
     state["valid_candidates"] = valid_candidates
     logger.info(f"Found {len(valid_candidates)} valid candidates for simulation.")
+    logger.info("--- Node 'batch_validate_and_process' completed. ---")
     return state
+
+def _log_iteration_summary(state: WorkflowState):
+    """打印迭代汇总日志"""
+    hist_alphas = state.get('historical_alphas', [])
+    repeat_alphas = state.get('repeat_historical_alphas', [])
+    total_hist = len(hist_alphas)
+    total_repeat = len(repeat_alphas)
+    total_generated = total_hist + total_repeat
+    repeat_rate = (total_repeat / total_generated * 100) if total_generated > 0 else 0.0
+
+    seed_score = -1.0
+    if state.get('best_alpha') and state['best_alpha'].get('scores'):
+        seed_score = state['best_alpha']['scores'].get('final_score', -1.0)
+
+    logger.info(f"\n{'='*80}")
+    logger.info(f"Iteration {state.get('iteration_count', 0)} Summary")
+    logger.info(f"  Historical Alphas Total: {total_hist}")
+    logger.info(f"  Repeated Alphas Total: {total_repeat}")
+    logger.info(f"  Repeat Rate: {repeat_rate:.2f}%")
+    logger.info(f"  Current Seed Alpha ID: {state.get('seed_alpha_id')}")
+    logger.info(f"  Current Seed Alpha Score: {seed_score:.4f}")
+    if state.get('best_alpha') and state['best_alpha'].get('alpha_info'):
+        best_id = state['best_alpha']['alpha_info'].get('id', 'N/A')
+        is_stats = state['best_alpha']['alpha_info'].get('is', {})
+        logger.info(f"  Best Alpha ID: {best_id}")
+        logger.info(f"    Sharpe: {is_stats.get('sharpe', 0):.4f}, "
+                    f"Fitness: {is_stats.get('fitness', 0):.4f}, "
+                    f"Turnover: {is_stats.get('turnover', 0):.4f}")
+    logger.info(f"{'='*80}\n")
 
 # ========================================================================
 # LangGraph 节点 4: 批量模拟并选优
@@ -767,6 +899,7 @@ def batch_validate_and_process(state: WorkflowState) -> WorkflowState:
 
 def batch_simulate_and_select_best(state: WorkflowState) -> WorkflowState:
     """批量提交模拟、收集结果、更新历史、选出最优"""
+    logger.info("--- Starting node 'batch_simulate_and_select_best' ---")
     if state.get("status_callback"):
         state["status_callback"](f"Simulating and selecting best candidates (total: {len(state['valid_candidates'])})")
     logger.info("--- Batch simulating and selecting best ---")
@@ -781,6 +914,8 @@ def batch_simulate_and_select_best(state: WorkflowState) -> WorkflowState:
         state['no_valid_candidates_counter'] = state.get('no_valid_candidates_counter', 0) + 1
         if state.get('best_alpha') and state['best_alpha'].get('alpha_info'):
             state['seed_alpha_id'] = state['best_alpha']['alpha_info'].get('id', state['seed_alpha_id'])
+        _log_iteration_summary(state)
+        logger.info("--- Node 'batch_simulate_and_select_best' completed (no valid candidates). ---")
         return state
 
     state['no_valid_candidates_counter'] = 0
@@ -965,6 +1100,8 @@ def batch_simulate_and_select_best(state: WorkflowState) -> WorkflowState:
                     state['historical_alphas'] = historical_alphas
                     state['repeat_historical_alphas'] = repeat_historical_alphas
                     logger.info(f"SUCCESS! Alpha {alpha_id} passed all checks and correlations!")
+                    _log_iteration_summary(state)
+                    logger.info("--- Node 'batch_simulate_and_select_best' completed (success). ---")
                     return state
                 else:
                     logger.info(f"Alpha {alpha_id} passed checks but failed correlations.")
@@ -1008,6 +1145,8 @@ def batch_simulate_and_select_best(state: WorkflowState) -> WorkflowState:
         logger.info("No new alphas to evaluate.")
         if state.get('best_alpha') and state['best_alpha'].get('alpha_info'):
             state['seed_alpha_id'] = state['best_alpha']['alpha_info'].get('id', state['seed_alpha_id'])
+        _log_iteration_summary(state)
+        logger.info("--- Node 'batch_simulate_and_select_best' completed (no alphas to evaluate). ---")
         return state
 
     # 4. 使用务实评分选出最优
@@ -1032,6 +1171,8 @@ def batch_simulate_and_select_best(state: WorkflowState) -> WorkflowState:
     if state.get('best_alpha') and state['best_alpha'].get('alpha_info'):
         state['seed_alpha_id'] = state['best_alpha']['alpha_info'].get('id', state['seed_alpha_id'])
 
+    _log_iteration_summary(state)
+    logger.info("--- Node 'batch_simulate_and_select_best' completed. ---")
     return state
 
 # ========================================================================
