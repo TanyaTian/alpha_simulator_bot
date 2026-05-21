@@ -49,13 +49,13 @@ class OptimizationManager:
                 task = self.task_queue.get(timeout=1)
                 self.current_task = task
                 self.is_running = True
-                self.status_info = f"正在优化 Alpha: {task} (初始化中...)"
+                self.status_info = f"Optimizing Alpha: {task} (Initializing...)"
                 logger.info(f"开始执行优化任务: {task}")
                 
                 try:
                     # 定义状态更新回调函数
                     def update_status(msg):
-                        self.status_info = f"正在优化 Alpha: {task} ({msg})"
+                        self.status_info = f"Optimizing Alpha: {task} ({msg})"
                         logger.debug(f"任务 {task} 进度更新: {msg}")
 
                     # 调用 LangGraph 构建的核心优化工作流
@@ -68,7 +68,7 @@ class OptimizationManager:
                 # 重置状态，标记任务完成
                 self.current_task = None
                 self.is_running = False
-                self.status_info = "空闲"
+                self.status_info = "Idle"
                 self.task_queue.task_done()
             except queue.Empty:
                 continue
@@ -100,7 +100,7 @@ class OptimizationManager:
             except queue.Empty:
                 break
         logger.info(f"已清空优化任务队列，共移除 {removed_count} 个任务。")
-        self.status_info = f"已清空队列 (移除了 {removed_count} 个任务)"
+        self.status_info = f"Queue cleared (removed {removed_count} tasks)"
         return removed_count
 
     def get_status(self):

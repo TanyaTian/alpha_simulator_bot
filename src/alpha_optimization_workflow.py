@@ -118,15 +118,6 @@ class WorkflowState(TypedDict):
 # ========================================================================
 
 
-def _extract_field_ids_from_text(text: str) -> set:
-    """从文本中提取潜在的字段 ID"""
-    operators = {'rank', 'ts_rank', 'vec_avg', 'vec_sum', 'abs', 'returns', 'ts_corr', 'ts_arg_max',
-                 'ts_mean', 'ts_std_dev', 'ts_arg_min', 'ts_regression', 'ts_step', 'nan', 'if_else',
-                 'trade_when', 'group_rank', 'group_zscore', 'group_neutralize', 'vector_neut',
-                 'group_vector_neut', 'bucket', 'quantile', 'clamp', 'tail', 'densify', 'hump', 'reverse',
-                 'gaussian', 'uniform', 'cauchy'}
-    potential_fields = re.findall(r'\b[a-z][a-z0-9_]{3,}\b', text)
-    return {f for f in potential_fields if f not in operators}
 
 def _load_field_metadata_cache(settings: dict) -> dict:
     """Load the field metadata cache from disk."""
@@ -237,20 +228,33 @@ def _load_region_knowledge(session, state: WorkflowState):
     """加载区域知识文档并提取字段"""
     region = state["row_setting"].get("region", "USA")
     doc_path = os.path.join(FILE_PATHS["REGION_DOCS_ROOT"], f"{region}.md")
+
+    # Load markdown content for knowledge reference
     if os.path.exists(doc_path):
         try:
             with open(doc_path, 'r') as f:
-                content = f.read()
-                state['knowledge_base']['region_knowledge'] = content
-                region_fields = _extract_field_ids_from_text(content)
-                if region_fields:
-                    _verify_and_load_region_fields(session, region_fields, state)
+                state['knowledge_base']['region_knowledge'] = f.read()
         except Exception as e:
             logger.error(f"Error loading region doc {doc_path}: {e}")
             state['knowledge_base']['region_knowledge'] = ""
     else:
         logger.warning(f"No region-specific doc found for {region} at {doc_path}")
         state['knowledge_base']['region_knowledge'] = ""
+
+    # Load field IDs from JSON definition file (instead of regex-parsing markdown)
+    fields_json_path = os.path.join(FILE_PATHS["REGION_DOCS_ROOT"], f"{region}_fields.json")
+    if os.path.exists(fields_json_path):
+        try:
+            with open(fields_json_path, 'r') as f:
+                field_def = json.load(f)
+            region_fields = set(field_def.get("fields", []))
+            if region_fields:
+                _verify_and_load_region_fields(session, region_fields, state)
+                logger.info(f"[Region: {region}] Loaded {len(region_fields)} fields from {region}_fields.json")
+        except Exception as e:
+            logger.error(f"Error loading region fields JSON {fields_json_path}: {e}")
+    else:
+        logger.warning(f"No region fields JSON found for {region} at {fields_json_path}")
 
 # ========================================================================
 # Alpha 信息获取
@@ -619,7 +623,7 @@ def propose_and_generate_batch(state: WorkflowState) -> WorkflowState:
     # 3. 准备数据字段样本
     fields_df = state.get('all_fields_df')
     if fields_df is not None and not fields_df.empty:
-        sample_size = min(500, len(fields_df))
+        sample_size = min(1500, len(fields_df))
         datafields_sample = fields_df.sample(n=sample_size)[['id', 'description']].to_string(index=False)
     else:
         datafields_sample = "No data fields available."
