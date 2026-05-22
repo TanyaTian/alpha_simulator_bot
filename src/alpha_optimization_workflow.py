@@ -1056,6 +1056,8 @@ def batch_simulate_and_select_best(state: WorkflowState) -> WorkflowState:
         else:
             # 提取关键检查指标
             stats_str_parts = []
+            added_prod_corr = False
+            added_self_corr = False
             if check_df is not None and not check_df.empty:
                 check_dict = check_df.set_index('name')['value'].to_dict()
                 metrics_to_include = [
@@ -1064,23 +1066,34 @@ def batch_simulate_and_select_best(state: WorkflowState) -> WorkflowState:
                     'LOW_ROBUST_UNIVERSE_SHARPE', 'LOW_2Y_SHARPE',
                     'LOW_ASI_JPN_SHARPE', 'LOW_INVESTABILITY_CONSTRAINED_SHARPE',
                     'LOW_ROBUST_UNIVERSE_SHARPE.WITH_RATIO', 'LOW_ROBUST_UNIVERSE_RETURNS',
-                    'IS_LADDER_SHARPE'
+                    'IS_LADDER_SHARPE', 'SELF_CORRELATION', 'PROD_CORRELATION'
                 ]
                 for metric in metrics_to_include:
                     value = check_dict.get(metric)
                     if pd.notna(value):
                         if isinstance(value, float):
-                            stats_str_parts.append(f"'{metric}': {value:.4f}")
+                            val_str = f"{value:.4f}"
                         else:
-                            stats_str_parts.append(f"'{metric}': {value}")
+                            val_str = f"{value}"
+                        stats_str_parts.append(f"'{metric}': {val_str}")
+
+                        if metric == 'PROD_CORRELATION':
+                            added_prod_corr = True
+                            logger.info(f"Alpha {alpha_id} - Extracted PROD_CORRELATION from checks: {val_str}")
+                        elif metric == 'SELF_CORRELATION':
+                            added_self_corr = True
+                            logger.info(f"Alpha {alpha_id} - Extracted SELF_CORRELATION from checks: {val_str}")
             # 追加 margin（始终包含）
             margin = alpha_details.get("is", {}).get("margin")
             if margin is not None and pd.notna(margin):
                 stats_str_parts.append(f"'margin': {margin:.6f}")
             # 仅当实际调用了相关性检查时才追加相关性数据
             if corr_values is not None:
-                for corr_name in ["pc", "sc", "ppc"]:
-                    stats_str_parts.append(f"'{corr_name}': {corr_values[corr_name]:.4f}")
+                if not added_prod_corr:
+                    stats_str_parts.append(f"'pc': {corr_values['pc']:.4f}")
+                if not added_self_corr:
+                    stats_str_parts.append(f"'sc': {corr_values['sc']:.4f}")
+                stats_str_parts.append(f"'ppc': {corr_values['ppc']:.4f}")
             stats_str = ", ".join(stats_str_parts)
             historical_alpha_entry = f"Expression: {expression} | Neutralization: {neutralization} | Checks: {{ {stats_str} }}"
             historical_alphas.append(historical_alpha_entry)
