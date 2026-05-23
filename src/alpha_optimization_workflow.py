@@ -499,10 +499,13 @@ def _check_correlations(session, alpha_id: str):
 def fetch_seed_details(state: WorkflowState) -> WorkflowState:
     """获取初始种子 Alpha 信息及周边知识"""
     logger.info("--- Starting node 'fetch_seed_details' ---")
-    if state.get("status_callback"):
-        state["status_callback"]("Fetching seed details and related knowledge")
-
     iteration = state.get('iteration_count', 0)
+    simulated_count = len(state.get('historical_alphas', []))
+    if state.get("status_callback"):
+        state["status_callback"]("Fetching seed details and related knowledge", 
+                                  iteration=iteration + 1, 
+                                  simulated_count=simulated_count)
+
     hist_alphas = state.get('historical_alphas', [])
     repeat_alphas = state.get('repeat_historical_alphas', [])
     total_hist = len(hist_alphas)
@@ -581,8 +584,12 @@ def fetch_seed_details(state: WorkflowState) -> WorkflowState:
 def propose_and_generate_batch(state: WorkflowState) -> WorkflowState:
     """调用 LLM 生成 20 个 Alpha 表达式变体"""
     logger.info("--- Starting node 'propose_and_generate_batch' ---")
+    iteration = state.get('iteration_count', 0)
+    simulated_count = len(state.get('historical_alphas', []))
     if state.get("status_callback"):
-        state["status_callback"]("Calling LLM to generate variants")
+        state["status_callback"]("Calling LLM to generate variants", 
+                                  iteration=iteration + 1, 
+                                  simulated_count=simulated_count)
     logger.info("--- Proposing and generating alpha batch via LLM ---")
 
     session = ace_lib.check_session_and_relogin(state["session"])
@@ -621,7 +628,7 @@ def propose_and_generate_batch(state: WorkflowState) -> WorkflowState:
     else:
         datafields_sample = "No data fields available."
 
-    # 3.5 提取种子表达式中的字段，用于在 Prompt 中显式告知 LLM 保留这些字段
+    # 3.5 提取种子表达式中的字段，用于在 Prompt 中显式告知 LLM 保留 these 字段
     seed_expression = state.get('seed_expression', '')
     if seed_expression:
         try:
@@ -796,8 +803,12 @@ def propose_and_generate_batch(state: WorkflowState) -> WorkflowState:
 def batch_validate_and_process(state: WorkflowState) -> WorkflowState:
     """批量验证表达式合法性、字段存在性并进行类型自动补全"""
     logger.info("--- Starting node 'batch_validate_and_process' ---")
+    iteration = state.get('iteration_count', 0)
+    simulated_count = len(state.get('historical_alphas', []))
     if state.get("status_callback"):
-        state["status_callback"](f"Validating {len(state['proposed_alphas'])} candidate expressions")
+        state["status_callback"](f"Validating {len(state['proposed_alphas'])} candidate expressions", 
+                                  iteration=iteration + 1, 
+                                  simulated_count=simulated_count)
     logger.info(f"--- Validating {len(state['proposed_alphas'])} candidates ---")
 
     session = state["session"]
@@ -897,13 +908,17 @@ def _log_iteration_summary(state: WorkflowState):
 def batch_simulate_and_select_best(state: WorkflowState) -> WorkflowState:
     """批量提交模拟、收集结果、更新历史、选出最优"""
     logger.info("--- Starting node 'batch_simulate_and_select_best' ---")
-    if state.get("status_callback"):
-        state["status_callback"](f"Simulating and selecting best candidates (total: {len(state['valid_candidates'])})")
-    logger.info("--- Batch simulating and selecting best ---")
-
     session = ace_lib.check_session_and_relogin(state["session"])
     state["session"] = session
     state["iteration_count"] += 1
+
+    iteration = state.get('iteration_count', 0)
+    simulated_count = len(state.get('historical_alphas', []))
+    if state.get("status_callback"):
+        state["status_callback"](f"Simulating and selecting best candidates (total: {len(state['valid_candidates'])})", 
+                                  iteration=iteration, 
+                                  simulated_count=simulated_count)
+    logger.info("--- Batch simulating and selecting best ---")
 
     valid_candidates = state["valid_candidates"]
     if not valid_candidates:

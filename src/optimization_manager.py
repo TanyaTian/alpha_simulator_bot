@@ -29,6 +29,8 @@ class OptimizationManager:
         self.current_task = None        # 当前正在处理的任务 ID
         self.is_running = False         # 是否正在运行优化
         self.status_info = "Idle"       # 详细状态信息描述
+        self.current_iteration = 0      # 当前迭代轮数
+        self.simulated_count = 0        # 已模拟的 Alpha 数量
         self._initialized = True
         self._start_worker()            # 初始化时自动开启工作线程
 
@@ -50,13 +52,19 @@ class OptimizationManager:
                 self.current_task = task
                 self.is_running = True
                 self.status_info = f"Optimizing Alpha: {task} (Initializing...)"
+                self.current_iteration = 0
+                self.simulated_count = 0
                 logger.info(f"开始执行优化任务: {task}")
                 
                 try:
                     # 定义状态更新回调函数
-                    def update_status(msg):
+                    def update_status(msg, iteration=None, simulated_count=None):
                         self.status_info = f"Optimizing Alpha: {task} ({msg})"
-                        logger.debug(f"任务 {task} 进度更新: {msg}")
+                        if iteration is not None:
+                            self.current_iteration = iteration
+                        if simulated_count is not None:
+                            self.simulated_count = simulated_count
+                        logger.debug(f"任务 {task} 进度更新: {msg}, iteration: {iteration}, simulated_count: {simulated_count}")
 
                     # 调用 LangGraph 构建的核心优化工作流
                     # 传入 status_callback 用于细粒度进度更新
@@ -69,6 +77,8 @@ class OptimizationManager:
                 self.current_task = None
                 self.is_running = False
                 self.status_info = "Idle"
+                self.current_iteration = 0
+                self.simulated_count = 0
                 self.task_queue.task_done()
             except queue.Empty:
                 continue
@@ -116,6 +126,8 @@ class OptimizationManager:
             "current_alpha": self.current_task,
             "pending_tasks": pending_tasks,
             "queue_length": len(pending_tasks),
+            "current_iteration": self.current_iteration,
+            "simulated_count": self.simulated_count,
             "info": self.status_info
         }
 

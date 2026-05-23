@@ -1056,11 +1056,11 @@ def main():
 
     # 4. Define alpha source and other variables
     # 此处路径需根据实际情况调整
-    alpha_source_path = '/Users/tianyuan/repos/APP/Tranformer/output/Alpha_generated_expressions_success.json'
+    alpha_source_path = '/Users/tianyuan/.claude/skills/brain-feature-implementation/data/fundamental17_usa_combo_alphas.json'
     expression_list = sample_alphas_from_file(alpha_source_path, 1)
     
     # 如果需要筛选包含特定字符串的 alpha，可以在此设置 substring
-    target_substring = "fnd17"
+    target_substring = ""
     if target_substring:
         expression_list = [e for e in expression_list if target_substring in e]
         print(f"Filtered to {len(expression_list)} alphas containing '{target_substring}'")

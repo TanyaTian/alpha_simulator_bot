@@ -18,7 +18,7 @@ class AlphaGroupCorrelationFilter:
         根据相关性筛选 alpha ID 组合。
         
         1. 获取每个 alpha 的 fitness。
-        2. 按 fitness 从小到大排序。
+        2. 按 fitness 从大到小排序。
         3. 贪心选择：调用 calc_self_corr 计算与当前组合的相关性。
         """
         if not alpha_ids:
@@ -55,9 +55,9 @@ class AlphaGroupCorrelationFilter:
             except Exception as e:
                 self.logger.error(f"Failed to fetch details for alpha {alpha_id}: {e}")
 
-        # 步骤 2: 按 fitness 从小到大排序
-        alpha_data.sort(key=lambda x: x['fitness'])
-        self.logger.info(f"Sorted {len(alpha_data)} alphas by fitness (ascending)")
+        # 步骤 2: 按 fitness 从大到小排序
+        alpha_data.sort(key=lambda x: x['fitness'], reverse=True)
+        self.logger.info(f"Sorted {len(alpha_data)} alphas by fitness (descending)")
 
         # 步骤 3: 预先获取所有 alpha 的收益率数据，提高效率
         self.logger.info("Pre-fetching returns data for the entire group...")
@@ -162,7 +162,8 @@ if __name__ == "__main__":
         "2XwPX1N"
     ]
     # 配置相关性阈值
-    threshold = 0.7
+    threshold = 0.5
     
     # 直接运行处理
-    run_filter(test_ids, threshold)
+    alpha_list = run_filter(test_ids, threshold)
+    print(alpha_list)
