@@ -605,6 +605,10 @@ def fetch_seed_details(state: WorkflowState) -> WorkflowState:
 def propose_and_generate_batch(state: WorkflowState) -> WorkflowState:
     """调用 LLM 生成 20 个 Alpha 表达式变体"""
     logger.info("--- Starting node 'propose_and_generate_batch' ---")
+    if state.get("status") == "failed":
+        logger.warning("Node 'propose_and_generate_batch' skipped due to failed status.")
+        return state
+
     iteration = state.get('iteration_count', 0)
     simulated_count = len(state.get('historical_alphas', []))
     if state.get("status_callback"):
@@ -679,20 +683,21 @@ def propose_and_generate_batch(state: WorkflowState) -> WorkflowState:
     # 5. 知识库内容整合
     kb_content = ""
     fail_names = []
-    if state['seed_performance_report']:
-        for line in state['seed_performance_report'].split('\n'):
+    seed_perf = state.get('seed_performance_report', '')
+    if seed_perf:
+        for line in seed_perf.split('\n'):
             if 'result:FAIL' in line:
                 fail_names.append(line.split(',')[0].replace('name:', ''))
 
     if fail_names:
         kb_content += f"## Issues to Address\nFocus on resolving: {', '.join(fail_names)}\n\n"
 
-    if state['knowledge_base'].get('improvement_methods'):
+    if state.get('knowledge_base', {}).get('improvement_methods'):
         kb_content += f"## Targeted Optimization Advice\n{state['knowledge_base']['improvement_methods']}\n\n"
-    if state['knowledge_base'].get('dataset_tips'):
+    if state.get('knowledge_base', {}).get('dataset_tips'):
         kb_content += f"## Dataset Usage Tips\n{state['knowledge_base']['dataset_tips']}\n\n"
-    if state['knowledge_base'].get('region_knowledge'):
-        kb_content += f"## Region-Specific Advice ({state['row_setting'].get('region')})\n{state['knowledge_base']['region_knowledge']}\n\n"
+    if state.get('knowledge_base', {}).get('region_knowledge'):
+        kb_content += f"## Region-Specific Advice ({state.get('row_setting', {}).get('region', 'USA')})\n{state['knowledge_base']['region_knowledge']}\n\n"
 
     # 6. 构造完整 Prompt
     prompt_parts = [
@@ -700,13 +705,13 @@ def propose_and_generate_batch(state: WorkflowState) -> WorkflowState:
         "You are a research assistant specializing in statistical modeling and mathematical expression analysis. "
         "Your task is to analyze the given mathematical expression and propose modified variants that may improve statistical properties.\n\n",
         "## 1. Input Expression\n",
-        f"```\n{state['seed_expression']}\n```\n\n",
+        f"```\n{state.get('seed_expression', '')}\n```\n\n",
         "## 2. Configuration Parameters\n",
-        f"```json\n{json.dumps(state['seed_setting'], indent=2)}\n```\n\n",
+        f"```json\n{json.dumps(state.get('seed_setting', {}), indent=2)}\n```\n\n",
         "## 3. Performance Metrics\n",
-        f"```\n{state['seed_performance_report']}\n```\n\n",
+        f"```\n{state.get('seed_performance_report', 'N/A')}\n```\n\n",
         "## 4. Historical Data Analysis\n",
-        f"```\n{state['yearly_performance_report']}\n```\n\n",
+        f"```\n{state.get('yearly_performance_report', 'N/A')}\n```\n\n",
         f"{hist_str}\n\n" if hist_str else "",
         f"{kb_content}\n" if kb_content else "",
         "## 5. Available Mathematical Operators\n",
@@ -929,6 +934,9 @@ def _log_iteration_summary(state: WorkflowState):
 def batch_simulate_and_select_best(state: WorkflowState) -> WorkflowState:
     """批量提交模拟、收集结果、更新历史、选出最优"""
     logger.info("--- Starting node 'batch_simulate_and_select_best' ---")
+    if state.get("status") == "failed":
+        logger.warning("Node 'batch_simulate_and_select_best' skipped due to failed status.")
+        return state
     session = ace_lib.check_session_and_relogin(state["session"])
     state["session"] = session
     state["iteration_count"] += 1
@@ -1314,11 +1322,23 @@ def run_optimization_workflow(seed_alpha_id: str, status_callback: Optional[Call
         "seed_alpha_id": seed_alpha_id,
         "valid_data_fields": set(),
         "all_fields_df": pd.DataFrame(),
-        "iteration_count": 0,
+        "seed_expression": "",
+        "seed_setting": {},
+        "row_setting": {},
+        "seed_performance_report": "",
+        "yearly_performance_report": "",
+        "proposed_alphas": [],
+        "valid_candidates": [],
         "historical_alphas": [],
         "repeat_historical_alphas": [],
-        "no_valid_candidates_counter": 0,
+        "knowledge_base": {},
         "status": "running",
+        "success_id": None,
+        "error_log": [],
+        "best_alpha": {},
+        "initial_best_alpha": {},
+        "iteration_count": 0,
+        "no_valid_candidates_counter": 0,
         "status_callback": status_callback,
     }
 
