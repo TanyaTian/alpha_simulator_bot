@@ -10,6 +10,7 @@ import json
 import time
 import os
 import re
+import sys
 from http.client import RemoteDisconnected
 from requests.exceptions import ConnectionError
 from llm_calls import test_llm_connection
@@ -335,11 +336,31 @@ def _get_performance_report(session, seed_alpha_id: str, state: WorkflowState) -
 # ========================================================================
 
 def _build_data_fields(session, alpha_id: str, state: WorkflowState) -> List[str]:
-    """构建可用字段列表和字段类别"""
+    """构建可用字段列表和字段类别，强化数据获取的稳定性"""
     session = ace_lib.check_session_and_relogin(session)
 
-    # 获取 Alpha 所使用的数据集
-    all_datasets_df, _ = utils.get_datasets_for_alpha(alpha_id, session)
+    # 获取 Alpha 所使用的数据集，增加重试机制以应对网络/API不稳定
+    # get_datasets_for_alpha 是一个复合过程，任何环节失效都会导致结果不完整
+    all_datasets_df = pd.DataFrame()
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            # get_datasets_for_alpha 内部已使用 safe_api_call，在此增加外层重试
+            all_datasets_df, _ = utils.get_datasets_for_alpha(alpha_id, session)
+            
+            if all_datasets_df is not None and not all_datasets_df.empty:
+                logger.info(f"Successfully fetched {len(all_datasets_df)} fields for alpha {alpha_id}")
+                break
+            else:
+                logger.warning(f"Attempt {attempt + 1}: get_datasets_for_alpha returned empty for {alpha_id}")
+        except Exception as e:
+            logger.error(f"Attempt {attempt + 1}: get_datasets_for_alpha failed: {e}")
+        
+        if attempt < max_retries - 1:
+            sleep_time = (attempt + 1) * 60 # 60s, 120s
+            logger.info(f"Retrying get_datasets_for_alpha in {sleep_time}s...")
+            time.sleep(sleep_time)
+            session = ace_lib.check_session_and_relogin(session)
 
     field_categories = []
     if all_datasets_df is not None and not all_datasets_df.empty and 'category_id' in all_datasets_df.columns:
@@ -1318,3 +1339,18 @@ def run_optimization_workflow(seed_alpha_id: str, status_callback: Optional[Call
             final_state = {"error": f"Workflow crashed: {e}"}
 
     return final_state
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python src/alpha_optimization_workflow.py <alpha_id>")
+        sys.exit(1)
+    
+    alpha_id = sys.argv[1]
+    result = run_optimization_workflow(alpha_id)
+    print(f"\nWorkflow finished. Final status: {result.get('status')}")
+    if result.get('success_id'):
+        print(f"Success Alpha ID: {result.get('success_id')}")
+    elif result.get('best_alpha'):
+        best_id = result['best_alpha'].get('alpha_info', {}).get('id', 'N/A')
+        print(f"Best candidate found: {best_id}")
+

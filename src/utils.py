@@ -1021,7 +1021,7 @@ def main():
 
     # 3. 指定要查询的类别 (Categories)
     # 您只需要在此处手动输入类别，例如 ["analyst", "fundamental"]
-    categories_to_query = ["fundamental"]
+    categories_to_query = ["model"]
     
     dataset_ids = []
     default_params = {
@@ -1056,7 +1056,7 @@ def main():
 
     # 4. Define alpha source and other variables
     # 此处路径需根据实际情况调整
-    alpha_source_path = '/Users/tianyuan/.claude/skills/brain-feature-implementation/data/fundamental17_usa_combo_alphas.json'
+    alpha_source_path = '/Users/tianyuan/.claude/skills/brain-feature-implementation/data/model165_all_expressions_combined.json'
     expression_list = sample_alphas_from_file(alpha_source_path, 1)
     
     # 如果需要筛选包含特定字符串的 alpha，可以在此设置 substring
