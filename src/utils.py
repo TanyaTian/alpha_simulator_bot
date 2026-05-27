@@ -433,37 +433,25 @@ def safe_api_call(func, *args, max_retries=3, initial_delay=60, call_timeout=300
                 future = executor.submit(func, *args, **kwargs)
                 return future.result(timeout=call_timeout)
 
-        except concurrent.futures.TimeoutError as e:
-            print(f"Warning: API call timed out after {call_timeout}s. Retrying in {delay}s... (Attempt {attempt + 1}/{max_retries})")
-
-        except (RequestsTimeout, ReadTimeout) as e:
-            print(f"Warning: API call timed out (requests): {e}. Retrying in {delay}s... (Attempt {attempt + 1}/{max_retries})")
-
-        except (RemoteDisconnected, ConnectionError) as e:
-            # Handle network errors
-            print(f"Warning: API call failed with network error: {e}. Retrying in {delay}s... (Attempt {attempt + 1}/{max_retries})")
-
-        except requests.exceptions.HTTPError as e:
-            # Handle HTTP errors, specifically 429 (Too Many Requests) or server errors
-            status_code = e.response.status_code if e.response is not None else "Unknown"
-            if status_code in [429, 500, 502, 503, 504]:
-                print(f"Warning: API call failed with HTTP {status_code}: {e}. Retrying in {delay}s... (Attempt {attempt + 1}/{max_retries})")
-            else:
-                # For other HTTP errors (e.g., 401, 403, 404), re-raise immediately
+        except (concurrent.futures.TimeoutError, RequestsTimeout, ReadTimeout, RemoteDisconnected, ConnectionError, json.JSONDecodeError, requests.exceptions.HTTPError) as e:
+            # Handle specific HTTP errors that should be retried
+            if isinstance(e, requests.exceptions.HTTPError):
+                status_code = e.response.status_code if e.response is not None else "Unknown"
+                if status_code not in [429, 500, 502, 503, 504]:
+                    raise
+            
+            if attempt + 1 == max_retries:
+                print(f"FATAL: API call failed after {max_retries} retries: {e}")
                 raise
+            
+            print(f"Warning: API call failed: {e}. Retrying in {delay}s... (Attempt {attempt + 1}/{max_retries})")
+            time.sleep(delay + random.uniform(0, 5))
+            delay *= 2
 
-        except json.JSONDecodeError as e:
-            # Handle JSON parsing errors
-            print(f"Warning: Failed to decode JSON response: {e}. Retrying in {delay}s... (Attempt {attempt + 1}/{max_retries})")
-
-        # If any of the above exceptions occur, wait and retry
-        if attempt + 1 == max_retries:
-            print(f"FATAL: API call failed after {max_retries} retries.")
-            raise  # After exhausting retries, re-raise the last exception
-
-        time.sleep(delay + random.uniform(0, 5))
-        delay *= 2 # Exponentially increase delay
-
+        except Exception as e:
+            # Catch-all for other unexpected exceptions that should NOT be retried
+            print(f"FATAL: API call failed with unexpected error: {e}")
+            raise
 def extract_datafields(expression: str, brain_session) -> set:
     """
     (Final encapsulated version) Extracts a candidate set of data fields from an expression string.
