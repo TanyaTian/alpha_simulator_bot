@@ -60,6 +60,48 @@ def fetch_data(session, params, max_retries=3, delay=5):
                 print("已达到最大重试次数，放弃获取数据。")
                 return pd.DataFrame()
 
+def fetch_all_datasets(session, params, max_retries=3, delay=5):
+    """
+    使用分页获取指定类别的全部数据集，自动处理 offset。
+
+    BRAIN API /data-sets 端点的 limit 最大值为 50，超过会返回 400 错误。
+    本函数在内部使用 limit=50 分页，直到获取完所有结果。
+
+    Args:
+        session: requests.Session 对象。
+        params (dict): API 请求参数字典（不需要包含 offset，会自动添加）。
+        max_retries (int): 单次请求的最大重试次数。
+        delay (int): 重试之间的延迟秒数。
+
+    Returns:
+        pd.DataFrame: 所有分页结果的合并 DataFrame。
+    """
+    page_limit = 50
+    all_dfs = []
+    offset = 0
+
+    while True:
+        page_params = params.copy()
+        page_params['limit'] = page_limit
+        page_params['offset'] = offset
+
+        df = fetch_data(session, page_params, max_retries=max_retries, delay=delay)
+        if df.empty:
+            break
+
+        all_dfs.append(df)
+        fetched = len(df)
+        if fetched < page_limit:
+            # 获取数量不足一页，说明已是最后一页
+            break
+
+        offset += page_limit
+
+    if not all_dfs:
+        return pd.DataFrame()
+
+    return pd.concat(all_dfs, ignore_index=True)
+
 def write_to_csv(df, file_path, mode='w'):
     """
     将 DataFrame 写入 CSV 文件。
@@ -1015,8 +1057,6 @@ def main():
     default_params = {
         'delay': delay,
         'instrumentType': 'EQUITY',
-        'limit': 30,
-        'offset': 0,
         'region': region,
         'universe': universe,
     }
@@ -1025,7 +1065,8 @@ def main():
     for category in categories_to_query:
         params = default_params.copy()
         params['category'] = category
-        results_df = fetch_data(brain_session, params)
+        # 使用分页获取完整数据集列表（API limit 最大 50，自动分页）
+        results_df = fetch_all_datasets(brain_session, params)
         if not results_df.empty:
             # 提取该类别下的所有 dataset ID
             category_ids = results_df['id'].tolist()
@@ -1044,7 +1085,7 @@ def main():
 
     # 4. Define alpha source and other variables
     # 此处路径需根据实际情况调整
-    alpha_source_path = '/Users/tianyuan/.claude/skills/brain-feature-implementation/data/model165_all_expressions_combined.json'
+    alpha_source_path = '/Users/tianyuan/.claude/skills/brain-report-to-expressions/out_put/shortinterest7_all_expressions.json'
     expression_list = sample_alphas_from_file(alpha_source_path, 1)
     
     # 如果需要筛选包含特定字符串的 alpha，可以在此设置 substring

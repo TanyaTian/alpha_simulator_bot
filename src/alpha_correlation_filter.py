@@ -148,15 +148,7 @@ def run_filter(alpha_ids: List[str], threshold: float = 0.7) -> List[str]:
 if __name__ == "__main__":
     # 配置需要筛选的 alpha ID 列表
     test_ids = [
-        "vRdeo7PG",
-        "2rJaVdw8",
-        "E5kqvapL",
-        "rKAbJ5wo",
-        "QPEn5xPr",
-        "E5kkKnJ9",
-        "vRddm7gA",
-        "2rJJKVdN",
-        "lerr0wX2"
+        "kqQ30R18", "E5kqvapL", "ZYrpxG73", "0mz7z5p2"
     ]
     # 配置相关性阈值
     threshold = 0.5

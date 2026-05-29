@@ -17,7 +17,7 @@ def get_power_pool_corr(s: SingleSession, alpha_id: str) -> pd.DataFrame:
         requests.exceptions.RequestException: If there's an error in the API request.
     """
     while True:
-        result = s.get(brain_api_url + "/alphas/" + alpha_id + "/correlations/power-pool")
+        result = s.get(brain_api_url + "/alphas/" + alpha_id + "/correlations/power-pool", timeout=(10, 600))
         if "retry-after" in result.headers:
             time.sleep(float(result.headers["Retry-After"]))
         else:

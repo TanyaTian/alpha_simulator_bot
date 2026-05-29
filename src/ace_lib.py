@@ -132,7 +132,7 @@ def start_session() -> SingleSession:
 
     s = SingleSession()
     s.auth = get_credentials()
-    r = s.post(brain_api_url + "/authentication")
+    r = s.post(brain_api_url + "/authentication", timeout=(10, 60))
     logger.debug(f"New session created (ID: {id(s)}) with authentication response: {r.status_code}, {r.json()}")
     if r.status_code == requests.status_codes.codes.unauthorized:
         if r.headers["WWW-Authenticate"] == "persona":
@@ -142,10 +142,10 @@ def start_session() -> SingleSession:
                 + "\n"
             )
             input()
-            s.post(urljoin(r.url, r.headers["Location"]))
+            s.post(urljoin(r.url, r.headers["Location"]), timeout=(10, 60))
 
             while True:
-                if s.post(urljoin(r.url, r.headers["Location"])).status_code != 201:
+                if s.post(urljoin(r.url, r.headers["Location"]), timeout=(10, 60)).status_code != 201:
                     input(
                         "Biometrics authentication is not complete. Please try again and press any key when completed \n"
                     )
@@ -175,7 +175,7 @@ def check_session_timeout(s: SingleSession) -> int:
 
     authentication_url = brain_api_url + "/authentication"
     try:
-        result = s.get(authentication_url).json()["token"]["expiry"]
+        result = s.get(authentication_url, timeout=(5, 20)).json()["token"]["expiry"]
         logger.debug(f"Session (ID: {id(s)}) timeout check result: {result}")
         return result
     except Exception:
@@ -317,7 +317,7 @@ def start_simulation(s: SingleSession, simulate_data: Union[list[dict], dict]) -
     Raises:
         requests.exceptions.RequestException: If there's an error in the API request.
     """
-    simulate_response = s.post(brain_api_url + "/simulations", json=simulate_data)
+    simulate_response = s.post(brain_api_url + "/simulations", json=simulate_data, timeout=(10, 60))
     return simulate_response
 
 
@@ -346,7 +346,7 @@ def simulation_progress(
     error_flag = False
     retry_count = 0
     while True:
-        simulation_progress_response = s.get(simulation_progress_url)
+        simulation_progress_response = s.get(simulation_progress_url, timeout=(10, 60))
         if simulation_progress_response.status_code // 100 != 2:
             logger.error(
                 f'Simulation {simulation_progress_url}, Status code: {simulation_progress_response.status_code}, Retry'
@@ -401,7 +401,7 @@ def get_simulation_result_json(s: SingleSession, alpha_id: str) -> dict:
     if alpha_id is None:
         return {}
     while True:
-        result = s.get(brain_api_url + "/alphas/" + alpha_id)
+        result = s.get(brain_api_url + "/alphas/" + alpha_id, timeout=(10, 600))
         if "retry-after" in result.headers:
             time.sleep(float(result.headers["Retry-After"]))
         else:
@@ -438,7 +438,7 @@ def multisimulation_progress(
     simulation_progress_url = simulate_response.headers["Location"]
     error_flag = False
     while True:
-        simulation_progress_response = s.get(simulation_progress_url)
+        simulation_progress_response = s.get(simulation_progress_url, timeout=(10, 60))
         if simulation_progress_response.status_code // 100 != 2:
             time.sleep(30)
         if simulation_progress_response.headers.get("Retry-After", 0) == 0:
@@ -492,7 +492,7 @@ def get_prod_corr(s: SingleSession, alpha_id: str) -> pd.DataFrame:
     """
 
     while True:
-        result = s.get(brain_api_url + "/alphas/" + alpha_id + "/correlations/prod")
+        result = s.get(brain_api_url + "/alphas/" + alpha_id + "/correlations/prod", timeout=(10, 600))
         if "retry-after" in result.headers:
             time.sleep(float(result.headers["Retry-After"]))
         else:
@@ -565,7 +565,7 @@ def get_self_corr(s: SingleSession, alpha_id: str) -> pd.DataFrame:
     """
 
     while True:
-        result = s.get(brain_api_url + "/alphas/" + alpha_id + "/correlations/self")
+        result = s.get(brain_api_url + "/alphas/" + alpha_id + "/correlations/self", timeout=(10, 600))
         if "retry-after" in result.headers:
             time.sleep(float(result.headers["Retry-After"]))
         else:
@@ -644,7 +644,7 @@ def get_check_submission(s: SingleSession, alpha_id: str) -> pd.DataFrame:
     """
 
     while True:
-        result = s.get(brain_api_url + "/alphas/" + alpha_id + "/check")
+        result = s.get(brain_api_url + "/alphas/" + alpha_id + "/check", timeout=(10, 600))
         if "retry-after" in result.headers:
             time.sleep(float(result.headers["Retry-After"]))
         else:
@@ -1042,7 +1042,7 @@ def set_alpha_properties(
         "combo": {"description": combo_desc},
         "selection": {"description": selection_desc},
     }
-    response = s.patch(brain_api_url + "/alphas/" + alpha_id, json=params)
+    response = s.patch(brain_api_url + "/alphas/" + alpha_id, json=params, timeout=(10, 60))
 
     return response
 
@@ -1065,7 +1065,7 @@ def _get_alpha_pnl(
     """
 
     while True:
-        result = s.get(brain_api_url + "/alphas/" + alpha_id + f"/recordsets/{pnl_type}")
+        result = s.get(brain_api_url + "/alphas/" + alpha_id + f"/recordsets/{pnl_type}", timeout=(10, 600))
         if "retry-after" in result.headers:
             time.sleep(float(result.headers["Retry-After"]))
         else:
@@ -1110,7 +1110,7 @@ def get_alpha_yearly_stats(s: SingleSession, alpha_id: str) -> pd.DataFrame:
     """
 
     while True:
-        result = s.get(brain_api_url + "/alphas/" + alpha_id + "/recordsets/yearly-stats")
+        result = s.get(brain_api_url + "/alphas/" + alpha_id + "/recordsets/yearly-stats", timeout=(10, 600))
         if "retry-after" in result.headers:
             time.sleep(float(result.headers["Retry-After"]))
         else:
@@ -1151,7 +1151,7 @@ def get_datasets(
         + "/data-sets?"
         + f"instrumentType={instrument_type}&region={region}&delay={str(delay)}&universe={universe}&theme={theme}"
     )
-    result = s.get(url)
+    result = s.get(url, timeout=(10, 600))
     datasets_df = pd.DataFrame(result.json()["results"])
     datasets_df = expand_dict_columns(datasets_df)
     return datasets_df
@@ -1194,7 +1194,7 @@ def get_datafields(
             + f"&region={region}&delay={str(delay)}&universe={universe}{type_param}&dataset.id={dataset_id}&limit=50"
             + "&offset={x}"
         )
-        count = s.get(url_template.format(x=0)).json()["count"]
+        count = s.get(url_template.format(x=0), timeout=(10, 300)).json()["count"]
         if count == 0:
             logger.warning(
                 f"No fields found: region={region}, delay={str(delay)}, universe={universe}, "
@@ -1217,7 +1217,7 @@ def get_datafields(
     datafields_list = []
     for x in range(0, count, 50):
         for _ in range(max_try):
-            datafields = s.get(url_template.format(x=x))
+            datafields = s.get(url_template.format(x=x), timeout=(10, 300))
             if "results" in datafields.json():
                 break
             time.sleep(5)
@@ -1246,7 +1246,7 @@ def get_operators(s: SingleSession) -> pd.DataFrame:
     pd.DataFrame: A DataFrame containing the operators with each scope entry
     as a separate row.
     """
-    df = pd.DataFrame(s.get(brain_api_url + "/operators").json())
+    df = pd.DataFrame(s.get(brain_api_url + "/operators", timeout=(10, 60)).json())
     return df.explode('scope').reset_index(drop=True)
 
 
@@ -1266,7 +1266,7 @@ def get_instrument_type_region_delay(s: SingleSession) -> pd.DataFrame:
     of instrument type, region, and delay. This list is then converted into a DataFrame and returned.
     """
 
-    settings_options = s.options('https://api.worldquantbrain.com/simulations').json()['actions']['POST']['settings'][
+    settings_options = s.options('https://api.worldquantbrain.com/simulations', timeout=(10, 60)).json()['actions']['POST']['settings'][
         'children'
     ]
     data = [
@@ -1338,7 +1338,7 @@ def performance_comparison(
     else:
         part_url = "users/self"
     while True:
-        result = s.get(brain_api_url + f"/{part_url}/alphas/" + alpha_id + "/before-and-after-performance")
+        result = s.get(brain_api_url + f"/{part_url}/alphas/" + alpha_id + "/before-and-after-performance", timeout=(10, 600))
         if "retry-after" in result.headers:
             time.sleep(float(result.headers["Retry-After"]))
         else:
@@ -1410,7 +1410,7 @@ def run_selection(s: SingleSession, selection_data: dict) -> dict:
     Raises:
         requests.exceptions.RequestException: If there's an error in the API request.
     """
-    selection_response = s.get(brain_api_url + "/simulations/super-selection", params=selection_data)
+    selection_response = s.get(brain_api_url + "/simulations/super-selection", params=selection_data, timeout=(10, 60))
     r = selection_response.json()
     selected_alphas_count = r.get("count")
     message = r.get("message", "")
@@ -1447,11 +1447,11 @@ def submit_alpha(s: SingleSession, alpha_id: str) -> bool:
     Raises:
         requests.exceptions.RequestException: If there's an error in the API request.
     """
-    result = s.post(brain_api_url + "/alphas/" + alpha_id + "/submit")
+    result = s.post(brain_api_url + "/alphas/" + alpha_id + "/submit", timeout=(10, 60))
     while True:
         if "retry-after" in result.headers:
             time.sleep(float(result.headers["Retry-After"]))
-            result = s.get(brain_api_url + "/alphas/" + alpha_id + "/submit")
+            result = s.get(brain_api_url + "/alphas/" + alpha_id + "/submit", timeout=(10, 60))
         else:
             break
     return result.status_code == 200

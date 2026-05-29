@@ -218,9 +218,10 @@ def initialize_model():
             model=llm_config["model"],
             base_url=llm_config["base_url"],
             api_key=llm_config["api_key"],
-            temperature=0.7, 
-            request_timeout=180.0,
+            temperature=0.7,
+            request_timeout=300.0,
         )
+
         logger.info("✅ LLM model initialized successfully.")
         return True
     except Exception as e:

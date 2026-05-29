@@ -160,7 +160,7 @@ def get_model(temperature=0.7):
         base_url=llm_config["base_url"],
         api_key=llm_config["api_key"],
         temperature=temperature,
-        request_timeout=180.0,
+        request_timeout=300.0,
     )
 
 def _get_performance_report(session, seed_alpha_id: str, state: WorkflowState) -> Tuple[pd.DataFrame, List[str]]:
