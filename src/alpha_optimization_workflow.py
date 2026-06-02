@@ -974,8 +974,8 @@ def batch_simulate_and_select_best(state: WorkflowState) -> WorkflowState:
             "regular": candidate["processed_expression"]
         })
 
-    # 2. 分块批量模拟（每批 3 个，带超时和重试）
-    chunk_size = 3
+    # 2. 分块批量模拟（每批 5 个，带超时和重试）
+    chunk_size = 5
     chunks = [sim_jobs[i:i + chunk_size] for i in range(0, len(sim_jobs), chunk_size)]
     batch_results = []
 

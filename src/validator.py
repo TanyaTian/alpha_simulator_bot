@@ -351,7 +351,8 @@ class ExpressionValidator:
     # 词法分析器规则
     tokens = ('FUNCTION', 'FIELD', 'NUMBER', 'LPAREN', 'RPAREN', 
               'PLUS', 'MINUS', 'TIMES', 'DIVIDE', 'COMMA', 'CATEGORY',
-              'EQUAL', 'ASSIGN', 'IDENTIFIER', 'STRING', 'GREATER', 'LESS', 'GREATEREQUAL', 'LESSEQUAL', 'NOTEQUAL', 'BOOLEAN')
+              'EQUAL', 'ASSIGN', 'IDENTIFIER', 'STRING', 'GREATER', 'LESS', 'GREATEREQUAL', 'LESSEQUAL', 'NOTEQUAL', 'BOOLEAN',
+              'QUESTION', 'COLON')
     
     # 忽略空白字符
     t_ignore = ' \t\n'
@@ -371,6 +372,8 @@ class ExpressionValidator:
     t_GREATER = r'>'
     t_LESS = r'<'
     t_ASSIGN = r'='
+    t_QUESTION = r'\?'
+    t_COLON = r':'
     
     # 数字（整数和浮点数）
     def t_NUMBER(self, t):
@@ -441,7 +444,7 @@ class ExpressionValidator:
     def t_error(self, t):
         if t:
             # 检查是否为非法字符
-            if not re.match(r'[a-zA-Z0-9_\+\-\*/\(\)\,\s=<>!]', t.value[0]):
+            if not re.match(r'[a-zA-Z0-9_\+\-\*/\(\)\,\s=<>!\?:]', t.value[0]):
                 # 这是一个非法字符
                 self.errors.append(f"非法字符 '{t.value[0]}' (行 {t.lexer.lineno})")
             else:
@@ -454,13 +457,21 @@ class ExpressionValidator:
     
     # 语法分析器规则
     def p_expression(self, p):
-        """expression : comparison
-                      | expression EQUAL comparison
-                      | expression NOTEQUAL comparison
-                      | expression GREATER comparison
-                      | expression LESS comparison
-                      | expression GREATEREQUAL comparison
-                      | expression LESSEQUAL comparison"""
+        """expression : logical
+                      | logical QUESTION expression COLON expression"""
+        if len(p) == 2:
+            p[0] = p[1]
+        else:
+            p[0] = ASTNode('ternary', [p[1], p[3], p[5]], {'op': '?:'})
+
+    def p_logical(self, p):
+        """logical : comparison
+                   | logical EQUAL comparison
+                   | logical NOTEQUAL comparison
+                   | logical GREATER comparison
+                   | logical LESS comparison
+                   | logical GREATEREQUAL comparison
+                   | logical LESSEQUAL comparison"""
         if len(p) == 2:
             p[0] = p[1]
         else:
@@ -750,7 +761,7 @@ class ExpressionValidator:
             unit = 'unit'
         elif node.node_type == 'category':
             unit = 'category'
-        elif node.node_type in {'unop', 'binop'}:
+        elif node.node_type in {'unop', 'binop', 'ternary'}:
             child_units = [self._infer_unit(child) for child in node.children if hasattr(child, 'node_type')]
             unit = 'category' if 'category' in child_units else 'unit'
         elif node.node_type == 'function':
@@ -827,7 +838,7 @@ class ExpressionValidator:
                             derived = True
                             break
                         positional_index += 1
-        elif node.node_type in {'unop', 'binop'}:
+        elif node.node_type in {'unop', 'binop', 'ternary'}:
             derived = any(
                 self._is_derived_category(child)
                 for child in node.children
@@ -974,7 +985,7 @@ class ExpressionValidator:
                 elif hasattr(child, 'node_type'):
                     child_errors = self.validate_ast(child, current_in_group_arg)
                     errors.extend(child_errors)
-        elif ast.node_type in ['unop', 'binop']:
+        elif ast.node_type in ['unop', 'binop', 'ternary']:
             # 对操作符的子节点进行验证
             for child in ast.children:
                 if hasattr(child, 'node_type'):

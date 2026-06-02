@@ -230,7 +230,11 @@ class AlphaSimulator:
                     robust = checks.get('LOW_ROBUST_UNIVERSE_SHARPE', 1.0)
                     jpn_robust = checks.get('LOW_ASI_JPN_SHARPE', 1.0)
                     conc_weight_res = checks_result.get('CONCENTRATED_WEIGHT', 'PASS')
+                    conc_weight_val = checks.get('CONCENTRATED_WEIGHT')
                     
+                    if conc_weight_res in ['FAIL', 'WARNING'] and not pd.isna(conc_weight_val) and conc_weight_val <= 0.3:
+                        self.logger.info(f"Alpha {alpha_id} Conc Weight {conc_weight_res} but value {conc_weight_val:.4f} <= 0.3, allowing.")
+
                     pass_check = True
                     fail_reason = ""
                     
@@ -243,9 +247,10 @@ class AlphaSimulator:
                     elif robust <= 0.8:
                         pass_check = False
                         fail_reason = f"Robust {robust:.2f} <= 0.8"
-                    elif conc_weight_res in ['FAIL', 'WARNING']:
+                    elif conc_weight_res in ['FAIL', 'WARNING'] and (pd.isna(conc_weight_val) or conc_weight_val > 0.3):
                         pass_check = False
-                        fail_reason = f"Conc Weight {conc_weight_res}"
+                        val_str = f"{conc_weight_val:.4f}" if not pd.isna(conc_weight_val) else "None"
+                        fail_reason = f"Conc Weight {conc_weight_res} (Value: {val_str})"
                     elif jpn_robust <= 0.8:
                         pass_check = False
                         fail_reason = f"JPN Robust {jpn_robust:.2f} <= 0.8"
