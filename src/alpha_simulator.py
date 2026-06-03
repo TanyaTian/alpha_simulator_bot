@@ -22,35 +22,21 @@ from ace_lib import (
 )
 from self_corr_calculator import calc_self_corr, load_data, download_data
 
-from datetime import datetime
-
 class TaskTracker:
-    """用于跟踪任务执行时间并在超时时释放信号量"""
-    def __init__(self, semaphore, timeout, logger):
-        self.semaphore = semaphore
+    """用于跟踪任务执行时间，提供 should_stop 信号用于内部自愿退出"""
+    def __init__(self, timeout, logger):
         self.timeout = timeout
         self.logger = logger
         self.start_time = time.time()
-        self.released = False
-        self.timed_out = False
-        self.lock = threading.Lock()
+        self._timed_out = False
 
-    def release(self, timed_out=False):
-        with self.lock:
-            if not self.released:
-                self.semaphore.release()
-                self.released = True
-                if timed_out:
-                    self.timed_out = True
-                return True
-            return False
-
-    def check_timeout(self):
-        if self.timed_out:
+    @property
+    def should_stop(self):
+        if self._timed_out:
             return True
         if time.time() - self.start_time > self.timeout:
-            if self.release(timed_out=True):
-                self.logger.warning(f"Task timed out after {self.timeout}s")
+            self._timed_out = True
+            self.logger.warning(f"Task detected timeout after {self.timeout}s, signaling stop.")
             return True
         return False
 
@@ -90,8 +76,7 @@ class AlphaSimulator:
             batch_number_for_every_queue=self.batch_number_for_every_queue
         )
         
-        # 并发控制
-        self.active_tasks = []
+        # 并发控制：信号量仅用于限制活跃线程数
         self.lock = threading.Lock()
         self.semaphore = threading.Semaphore(self.max_concurrent)
 
@@ -118,13 +103,11 @@ class AlphaSimulator:
         """配置变更回调处理"""
         self._load_config_from_manager()
         self.total_sent_count = 0
-        self.logger.info("Configuration reloaded due to config center update")
-        self.logger.info("total_sent_count is update to 0.")
+        self.logger.info("Configuration reloaded due to config center update. total_sent_count reset.")
 
-    def simulate_alphas(self, alpha_list: List[Dict]) -> List[Dict]:
+    def simulate_alphas(self, alpha_list: List[Dict], tracker: TaskTracker) -> List[Dict]:
         """
-        模拟一组 alpha。
-        直接调用 simulate_multi_alpha 并处理 429 和 Session 过期重试逻辑。
+        模拟一组 alpha。支持超时检查和重试逻辑。
         """
         sim_jobs = []
         for alpha in alpha_list:
@@ -134,7 +117,6 @@ class AlphaSimulator:
                 "regular": alpha.get('regular', '')
             })
 
-        # 添加响应钩子以便捕获 429 和 401
         def raise_on_retryable(r, *args, **kwargs):
             if r.status_code in [429, 401]:
                 r.raise_for_status()
@@ -145,27 +127,28 @@ class AlphaSimulator:
         if raise_on_retryable not in self.session.hooks['response']:
             self.session.hooks['response'].append(raise_on_retryable)
 
-        max_retries = 5
-        retry_delay = 300  # 5 minutes
+        max_retries = 3 
+        retry_delay = 120 
         
         for attempt in range(max_retries):
+            if tracker.should_stop:
+                break
+                
             try:
                 session = check_session_and_relogin(self.session)
                 self.session = session
-                
-                # 直接调用 simulate_multi_alpha (不再使用 safe_api_call)
                 return simulate_multi_alpha(session, sim_jobs)
                 
             except requests.exceptions.HTTPError as e:
                 status_code = e.response.status_code
                 if status_code in [429, 401]:
-                    self.logger.warning(f"Simulate Alphas encountered {status_code}. "
-                                       f"Attempt {attempt + 1}/{max_retries}. "
-                                       f"Waiting 5 mins before retry...")
+                    self.logger.warning(f"Simulate Alphas encountered {status_code}. Attempt {attempt + 1}/{max_retries}. Waiting {retry_delay}s...")
                     if attempt < max_retries - 1:
-                        time.sleep(retry_delay)
+                        for _ in range(retry_delay // 10):
+                            if tracker.should_stop: break
+                            time.sleep(10)
+                        
                         if status_code == 401:
-                            # 如果是 401，尝试重新登录
                             try:
                                 from ace_lib import start_session
                                 self.session = start_session()
@@ -173,20 +156,17 @@ class AlphaSimulator:
                                 self.logger.error(f"Force re-login failed: {login_err}")
                         continue
                 
-                # 如果是其他错误或者是最后一次尝试
-                self.logger.error(f"simulate_alphas failed after {attempt + 1} retries: {e}")
+                self.logger.error(f"simulate_alphas failed: {e}")
                 break
             except Exception as e:
-                # 处理其他非 HTTP 异常
-                self.logger.error(f"simulate_alphas encountered unexpected error: {e}")
+                self.logger.error(f"simulate_alphas unexpected error: {e}")
                 break
         
         return []
 
-    def filter_alphas(self, alpha_ids: List[str], tracker: TaskTracker = None) -> Tuple[List[Dict], List[Dict]]:
+    def filter_alphas(self, alpha_ids: List[str], tracker: TaskTracker) -> Tuple[List[Dict], List[Dict]]:
         """
-        过滤符合条件的 alpha，并生成可能的反转信号。
-        参考 stage_one_workflow.py 的 filter_alphas 节点逻辑。
+        过滤符合条件的 alpha，并提取反转信号建议。
         """
         passed_alphas = []
         reversal_proposals = []
@@ -194,25 +174,18 @@ class AlphaSimulator:
         self.session = session
         
         for alpha_id in alpha_ids:
-            if tracker and tracker.timed_out:
+            if tracker.should_stop:
                 break
+                
             try:
-                # 获取表达式 (用于记录历史和生成反转信号)
-                expression = ""
-                alpha_details = {}
-                try:
-                    response = session.get(f"https://api.worldquantbrain.com/alphas/{alpha_id}")
-                    response.raise_for_status()
-                    alpha_details = response.json()
-                    expression = alpha_details.get('regular', {}).get('code', "")
-                except Exception as e:
-                    self.logger.error(f"获取 Alpha {alpha_id} 详情失败: {e}")
+                response = session.get(f"https://api.worldquantbrain.com/alphas/{alpha_id}", timeout=60)
+                response.raise_for_status()
+                alpha_details = response.json()
+                expression = alpha_details.get('regular', {}).get('code', "")
 
-                # 获取统计和检查数据
                 stats_df = safe_api_call(get_alpha_yearly_stats, session, alpha_id)
                 check_df = safe_api_call(get_check_submission, session, alpha_id)
                 
-                # 1. Year State 检查 (Data History)
                 active_years = 0
                 if stats_df is not None and not stats_df.empty:
                     active_years = (stats_df['sharpe'] != 0.0).sum()
@@ -220,7 +193,6 @@ class AlphaSimulator:
                 if active_years < 8:
                     continue
                 
-                # 2. Check 信息检查
                 if check_df is not None and not check_df.empty:
                     checks = check_df.set_index('name')['value'].to_dict()
                     checks_result = check_df.set_index('name')['result'].to_dict()
@@ -256,26 +228,17 @@ class AlphaSimulator:
                         fail_reason = f"JPN Robust {jpn_robust:.2f} <= 0.8"
 
                     if pass_check:
-                        self.logger.info(f"✅ Alpha {alpha_id} 通过过滤 (Fitness: {fitness:.2f})")
-                        passed_alphas.append({
-                            'id': alpha_id,
-                            'fitness': fitness
-                        })
+                        self.logger.info(f"✅ Alpha {alpha_id} passed filtering (Fitness: {fitness:.2f})")
+                        passed_alphas.append({'id': alpha_id, 'fitness': fitness})
                     else:
-                        self.logger.info(f"Alpha {alpha_id} 未通过过滤: {fail_reason}")
-                        # 3. 生成反转信号
-                        # 条件: sharpe < -1 并且 fitness < -0.3
+                        self.logger.info(f"Alpha {alpha_id} filtered: {fail_reason}")
                         if sharpe < -1.0 and fitness < -0.3 and expression:
-                            self.logger.info(f"💡 Alpha {alpha_id} 触发反转逻辑 (Sharpe: {sharpe:.2f}, Fitness: {fitness:.2f})")
-                            try:
-                                settings_from_api = alpha_details.get("settings", {})
-                                reversal_proposals.append({
-                                    'type': 'REGULAR',
-                                    'settings': settings_from_api,
-                                    'regular': f"reverse({expression})"
-                                })
-                            except Exception as e:
-                                self.logger.error(f"生成反转信号失败: {e}")
+                            self.logger.info(f"💡 Alpha {alpha_id} triggers reversal (Sharpe: {sharpe:.2f}, Fitness: {fitness:.2f})")
+                            reversal_proposals.append({
+                                'type': 'REGULAR',
+                                'settings': alpha_details.get("settings", {}),
+                                'regular': f"reverse({expression})"
+                            })
             except Exception as e:
                 self.logger.error(f"Error filtering alpha {alpha_id}: {e}")
                 
@@ -283,8 +246,7 @@ class AlphaSimulator:
 
     def correlation_and_save(self, passed_alphas: List[Dict], context: Dict):
         """
-        相关性检查并保存。
-        参考 stage_one_workflow.py 的 correlation_and_save 节点逻辑。
+        相关性检查并保存信号记录。
         """
         if not passed_alphas:
             return
@@ -293,51 +255,28 @@ class AlphaSimulator:
         self.session = session
         
         try:
-            # 加载相关性参考数据
             download_data(session, flag_increment=True)
             os_alpha_ids, os_alpha_rets = load_data()
             if isinstance(os_alpha_rets, pd.DataFrame) and not os_alpha_rets.empty:
                 if os_alpha_rets.columns.duplicated().any():
                     os_alpha_rets = os_alpha_rets.loc[:, ~os_alpha_rets.columns.duplicated()]
         except Exception as e:
-            self.logger.error(f"Failed to load correlation data: {e}")
+            self.logger.error(f"Correlation data load failure: {e}")
             os_alpha_ids, os_alpha_rets = {}, pd.DataFrame()
 
-        # 排序 (Fitness 从大到小)
         passed_alphas.sort(key=lambda x: x['fitness'], reverse=True)
 
         for alpha_item in passed_alphas:
             alpha_id = alpha_item['id']
             try:
-                # 计算自相关性
                 max_corr = calc_self_corr(alpha_id, session, os_alpha_rets, os_alpha_ids)
-                
-                # --- 原有的相关性判断和过滤逻辑开始 ---
-                # 注释理由：平台的prod_corr获取非常不稳定，影响服务的正常运行。
-                # prod_corr = 1.0
-                # if max_corr < 0.7:
-                #     # 检查生产环境相关性
-                #     prod_corr_result = safe_api_call(check_prod_corr_test, session, alpha_id)
-                #     prod_corr = prod_corr_result['value'].max() if prod_corr_result is not None and not prod_corr_result.empty else 1.0
-                # 
-                # if max_corr < 0.7 and prod_corr < 0.7:
-                # --- 原有的相关性判断和过滤逻辑结束 ---
-
-                # 新逻辑：仅使用 calc_self_corr 获取的 max_corr < 0.5 则通过过滤
                 if max_corr < 0.5:
-                    # 获取 dataset_id 和 category
                     all_datasets_df, dataset_id = get_datasets_for_alpha(alpha_id, session)
-                    category = None
+                    category = 'unknown'
                     if all_datasets_df is not None and not all_datasets_df.empty and 'category_id' in all_datasets_df.columns:
                         field_categories = list(set(all_datasets_df['category_id'].dropna().tolist()))
-                        if field_categories:
-                            category = field_categories[0]
-                        else:
-                            category = 'unknown'
-                    else:
-                        category = 'unknown'
+                        if field_categories: category = field_categories[0]
 
-                    # 通过检查，保存信号
                     record = {
                         "alpha_id": alpha_id,
                         "region": context['region'],
@@ -349,237 +288,183 @@ class AlphaSimulator:
                         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     }
                     self.stage_one_signal_dao.upsert_signal(record)
-                    # 打标签
                     safe_api_call(set_alpha_properties, session, alpha_id, tags=[f"AlphaSim_{context['date_time']}"])
-                    self.logger.info(f"✅ Saved Alpha {alpha_id} (Fitness: {alpha_item['fitness']:.2f}, MaxCorr: {max_corr:.4f}, Dataset: {dataset_id}, Category: {category})")
+                    self.logger.info(f"✅ Saved Alpha {alpha_id} (Fitness: {alpha_item['fitness']:.2f}, MaxCorr: {max_corr:.4f})")
                 else:
-                    self.logger.info(f"❌ Alpha {alpha_id} 未通过相关性过滤 (MaxCorr: {max_corr:.4f} >= 0.5)")
+                    self.logger.info(f"❌ Alpha {alpha_id} failed correlation (MaxCorr: {max_corr:.4f} >= 0.5)")
             except Exception as e:
-                self.logger.error(f"Error in correlation/save for {alpha_id}: {e}")
+                self.logger.error(f"Correlation/Save error for {alpha_id}: {e}")
 
-    def workflow_slot(self, region: str, tracker: TaskTracker, reserved_amount: int = 0):
+    def workflow_slot(self, region: str, tracker: TaskTracker):
         """
-        单个工作流卡槽的执行流程。
+        单个区域的处理流水线，作为独立线程运行。
         """
-        try:
-            self.logger.info(f"🚀 [Workflow Slot] Started for region: {region}")
-            
-            # 1. 从数据库捞取 batch_size 个 pending alpha
-            self.logger.info(f"📋 [Stage 1/4] Fetching {self.batch_size} pending alphas from database for {region}...")
-            # 直接从数据库获取并锁定
-            db_records = self.alpha_list_pending_simulated_dao.fetch_and_lock_pending_by_region(region, self.batch_size)
-            if not db_records:
-                self.logger.info(f"ℹ️ No pending alphas found for region: {region}. Slot exiting.")
-                return
+        with self.semaphore: 
+            try:
+                self.logger.info(f"🚀 [Workflow Slot] Started: {region}")
+                
+                db_records = self.alpha_list_pending_simulated_dao.fetch_and_lock_pending_by_region(region, self.batch_size)
+                if not db_records:
+                    self.logger.info(f"ℹ️ No pending alphas for {region}. Exiting.")
+                    return
 
-            # 2. 将这批 alpha 的状态改为 sent
-            self.logger.info(f"🔄 [Stage 1/4] Marking {len(db_records)} records as 'sent'...")
-            record_ids = [r['id'] for r in db_records]
-            # 直接使用 DAO 更新状态
-            self.alpha_list_pending_simulated_dao.batch_update_status_by_ids(record_ids, 'sent')
-            
-            # 累加 total_sent_count
-            with self.lock:
-                self.total_sent_count += len(record_ids)
-                self.logger.info(f"📈 Total sent count updated: {self.total_sent_count}")
-
-            self.logger.info(f"🏗️ [Stage 2/4] Generating simulation job list...")
-            alpha_list = []
-            for record in db_records:
-                self.logger.debug(f"Processing DB record: {record['id']}")
-                settings = record.get('settings')
-                raw_settings_for_log = settings # Keep a copy for logging
+                record_ids = [r['id'] for r in db_records]
+                self.alpha_list_pending_simulated_dao.batch_update_status_by_ids(record_ids, 'sent')
                 
-                if isinstance(settings, str):
-                    try:
-                        # Try json.loads first as it's more common for stored JSON
-                        settings = json.loads(settings)
-                    except json.JSONDecodeError:
-                        try:
-                            # Fallback to ast.literal_eval if it's a Python literal string
-                            settings = ast.literal_eval(settings)
-                        except Exception as e:
-                            self.logger.error(f"❌ Failed to parse settings for record {record['id']}. "
-                                             f"Value: {raw_settings_for_log}, Type: {type(raw_settings_for_log)}, Error: {e}")
-                            settings = {}
-                elif settings is None:
-                    self.logger.warning(f"⚠️ Settings is None for record {record['id']}")
-                    settings = {}
-                elif not isinstance(settings, dict):
-                    self.logger.warning(f"⚠️ Settings is neither string nor dict for record {record['id']}. "
-                                       f"Type: {type(settings)}, Value: {settings}")
-                    settings = {}
-                
-                alpha_item = {
-                    'type': record.get('type', 'REGULAR'),
-                    'settings': settings,
-                    'regular': record.get('regular', '')
-                }
-                alpha_list.append(alpha_item)
-            
-            self.logger.info(f"✅ [Stage 2/4] Generated {len(alpha_list)} initial jobs.")
-
-            all_passed = []
-            # 3. 循环执行 simulate_alphas 和 filter_alphas，直到 batch size 个全部模拟完
-            self.logger.info(f"📡 [Stage 3/4] Starting simulation and filtering cycle (Sub-batches of 10)...")
-            idx = 0
-            sub_batch_count = 0
-            while idx < len(alpha_list):
-                if tracker.timed_out:
-                    self.logger.warning(f"⚠️ [Stage 3/4] Workflow slot for region {region} ABORTED due to timeout during simulation.")
-                    break
-                
-                sub_batch_count += 1
-                batch = alpha_list[idx:idx+10]
-                idx += 10
-                
-                self.logger.info(f"🧪 [Sub-batch {sub_batch_count}] Simulating {len(batch)} alphas...")
-                sim_results = self.simulate_alphas(batch)
-                
-                # 提取 alpha id
-                ids = [r['alpha_id'] for r in sim_results if r.get('alpha_id')]
-                self.logger.info(f"🔍 [Sub-batch {sub_batch_count}] Received {len(ids)} Alpha IDs. Starting filtering...")
-                
-                if ids:
-                    passed, reversals = self.filter_alphas(ids, tracker=tracker)
-                    all_passed.extend(passed)
-                    self.logger.info(f"✨ [Sub-batch {sub_batch_count}] {len(passed)} passed filter. {len(reversals)} reversals generated.")
-                    
-                    if reversals:
-                        self.logger.info(f"➕ Adding {len(reversals)} reversal proposals to the queue.")
-                        alpha_list.extend(reversals)
-            
-            # 4. 将所有通过 filter_alphas 的 alpha id 传入 correlation_and_save
-            if tracker.timed_out:
-                self.logger.warning(f"⚠️ [Stage 4/4] Skipping correlation and save for {region} due to timeout.")
-            elif all_passed:
-                self.logger.info(f"📊 [Stage 4/4] Starting correlation check and save for {len(all_passed)} passed alphas...")
-                first_settings = alpha_list[0]['settings']
-                context = {
-                    'region': region,
-                    'universe': first_settings.get('universe', 'TOP3000'),
-                    'delay': first_settings.get('delay', 1),
-                    'date_time': datetime.now().strftime("%Y%m%d")
-                }
-                self.correlation_and_save(all_passed, context)
-            else:
-                self.logger.info(f"ℹ️ [Stage 4/4] No alphas passed filtering for {region}. Skipping correlation.")
-
-            self.logger.info(f"🏁 [Workflow Slot] Finished for region: {region}")
-
-        except Exception as e:
-            self.logger.error(f"❌ Error in workflow_slot for region {region}: {e}", exc_info=True)
-        finally:
-            # 5. 完成后释放卡槽和预留计数
-            tracker.release()
-            if reserved_amount > 0:
                 with self.lock:
-                    self.reserved_count -= reserved_amount
+                    self.total_sent_count += len(record_ids)
 
-    def _check_timeouts(self):
-        """检查所有活动任务的超时情况"""
-        with self.lock:
-            remaining_tasks = []
-            for thread, tracker, region in self.active_tasks:
-                if not thread.is_alive():
-                    # 确保信号量已释放（如果线程正常结束）
-                    tracker.release()
-                    continue
+                alpha_list = []
+                for record in db_records:
+                    settings = record.get('settings')
+                    if isinstance(settings, str):
+                        try: settings = json.loads(settings)
+                        except:
+                            try: settings = ast.literal_eval(settings)
+                            except: settings = {}
+                    
+                    alpha_list.append({
+                        'type': record.get('type', 'REGULAR'),
+                        'settings': settings or {},
+                        'regular': record.get('regular', '')
+                    })
+
+                all_passed = []
+                reversal_to_db = []
                 
-                if tracker.check_timeout():
-                    # 已超时，tracker.check_timeout 会处理信号量释放
-                    # 我们停止跟踪它，让线程在下次循环检查 timed_out 时退出
-                    continue
+                for i in range(0, len(alpha_list), 10):
+                    if tracker.should_stop:
+                        self.logger.warning(f"⚠️ [Workflow Slot] {region} ABORTED due to timeout.")
+                        break
+                    
+                    batch = alpha_list[i:i+10]
+                    self.logger.info(f"🧪 [Batch {i//10 + 1}] Simulating {len(batch)} for {region}...")
+                    
+                    sim_results = self.simulate_alphas(batch, tracker)
+                    ids = [r['alpha_id'] for r in sim_results if r.get('alpha_id')]
+                    
+                    if ids:
+                        passed, reversals = self.filter_alphas(ids, tracker)
+                        all_passed.extend(passed)
+                        
+                        for rev in reversals:
+                            reversal_to_db.append({
+                                'type': rev['type'],
+                                'settings': json.dumps(rev['settings']) if isinstance(rev['settings'], dict) else rev['settings'],
+                                'regular': rev['regular'],
+                                'region': region,
+                                'priority': 0, 
+                                'status': 'pending'
+                            })
                 
-                remaining_tasks.append((thread, tracker, region))
-            self.active_tasks = remaining_tasks
+                if reversal_to_db:
+                    self.logger.info(f"🔄 Injecting {len(reversal_to_db)} reversal signals to DB with priority 0.")
+                    self.alpha_list_pending_simulated_dao.batch_insert(reversal_to_db)
+
+                if all_passed and not tracker.should_stop:
+                    first_settings = alpha_list[0]['settings']
+                    context = {
+                        'region': region,
+                        'universe': first_settings.get('universe', 'TOP3000'),
+                        'delay': first_settings.get('delay', 1),
+                        'date_time': datetime.now().strftime("%Y%m%d")
+                    }
+                    self.correlation_and_save(all_passed, context)
+
+            except Exception as e:
+                self.logger.error(f"❌ workflow_slot error ({region}): {e}", exc_info=True)
+            finally:
+                with self.lock:
+                    self.reserved_count -= self.batch_size
+                self.logger.info(f"🏁 [Workflow Slot] Finished: {region}")
 
     def manage_simulations(self):
-        """管理整个模拟过程"""
+        """
+        主管理循环，负责监控资源并派发线程。包含空跑检测逻辑。
+        """
         if not self.session:
-            self.logger.error("No session available for AlphaSimulator. Exiting...")
+            self.logger.error("No valid session. Exiting manager.")
             return
 
-        self.logger.info("AlphaSimulator starting simulation management...")
+        self.logger.info("AlphaSimulator Manager started (Refactored Threading Mode).")
+        active_threads = []
+        empty_poll_count = 0 
+
         while self.running:
-            # 0. Check limit
-            is_limit_reached = False
-            is_capacity_full = False
+            active_threads = [t for t in active_threads if t.is_alive()]
             
+            limit_reached = False
+            capacity_full = False
             with self.lock:
                 if self.total_sent_count >= self.batch_number_for_every_queue:
-                    is_limit_reached = True
+                    limit_reached = True
                 elif self.total_sent_count + self.reserved_count >= self.batch_number_for_every_queue:
-                    is_capacity_full = True
+                    capacity_full = True
             
-            if is_limit_reached:
-                self.logger.warning(f"🛑 Limit reached ({self.total_sent_count} >= {self.batch_number_for_every_queue}). Sleeping for 1 hour...")
-                
-                # Sleep for 1 hour, but check self.running every second
-                sleep_start = time.time()
-                while time.time() - sleep_start < 3600:
-                    if not self.running:
-                        break
+            if limit_reached:
+                self.logger.warning(f"🛑 Queue limit reached ({self.total_sent_count}). Sleeping 1 hour...")
+                for _ in range(3600):
+                    if not self.running: break
                     time.sleep(1)
-                
-                if not self.running:
-                    break
-                    
                 continue
             
-            if is_capacity_full:
-                # 已经预留了足够的量，等待任务完成
-                time.sleep(1)
+            if capacity_full:
+                time.sleep(10)
                 continue
 
-            # 1. 检查超时
-            self._check_timeouts()
-            
-            # 2. 判断 max_concurrent，如果还没有达到配置上限
-            if self.semaphore.acquire(timeout=1):
-                if not self.running:
-                    self.semaphore.release()
-                    break
+            if len(active_threads) < self.max_concurrent:
+                found_task_this_round = False
+                target_region = None
                 
                 with self.lock:
                     if not self.region_set:
-                        self.semaphore.release()
                         time.sleep(5)
                         continue
-                    region = self.region_set[0]
-                    self.region_set.rotate(-1)
+                    
+                    original_regions = list(self.region_set)
+                    for _ in range(len(original_regions)):
+                        region = self.region_set[0]
+                        self.region_set.rotate(-1)
+                        
+                        has_pending = self.alpha_list_pending_simulated_dao.fetch_pending_by_region(region, limit=1)
+                        if has_pending:
+                            found_task_this_round = True
+                            target_region = region
+                            break
                 
-                # 计算超时时间：15 分钟
-                timeout_minutes = 15
-                timeout_seconds = timeout_minutes * 60
-                
-                # 预留计数
-                reserved_amount = self.batch_size
-                with self.lock:
-                    self.reserved_count += reserved_amount
+                if found_task_this_round:
+                    empty_poll_count = 0 
+                    
+                    with self.lock:
+                        self.reserved_count += self.batch_size
 
-                # 创建 Tracker 和 线程
-                tracker = TaskTracker(self.semaphore, timeout_seconds, self.logger)
-                t = threading.Thread(target=self.workflow_slot, args=(region, tracker, reserved_amount))
-                t.daemon = True
-                t.start()
-                
-                with self.lock:
-                    self.active_tasks.append((t, tracker, region))
-
-                # 增加 3 秒间隔，避免瞬间并发触发平台限流
-                self.logger.info("Waiting 3 seconds before next task to avoid rate limiting...")
-                time.sleep(3)
+                    tracker = TaskTracker(timeout=1200, logger=self.logger)
+                    t = threading.Thread(target=self.workflow_slot, args=(target_region, tracker))
+                    t.daemon = True
+                    t.start()
+                    active_threads.append(t)
+                    
+                    self.logger.info(f"Dispatched thread for {target_region}. Active threads: {len(active_threads)}")
+                    time.sleep(3) 
+                else:
+                    empty_poll_count += 1
+                    self.logger.info(f"ℹ️ No pending tasks found in any region. Empty poll count: {empty_poll_count}/10")
+                    
+                    if empty_poll_count >= 10:
+                        self.logger.warning("😴 No tasks found for 10 consecutive polls. Sleeping for 1 hour...")
+                        empty_poll_count = 0 
+                        for _ in range(3600):
+                            if not self.running: break
+                            time.sleep(1)
+                    else:
+                        time.sleep(30) 
             else:
-                # 卡槽已满，等待
-                time.sleep(3)
+                time.sleep(5)
 
     def __del__(self):
-        """析构函数，确保清理"""
+        """确保资源回收"""
         if hasattr(self, '_config_observer_handle'):
-            try:
-                config_manager._observers.remove(self._handle_config_change)
-            except:
-                pass
+            try: config_manager._observers.remove(self._handle_config_change)
+            except: pass
         if hasattr(self, 'cache_manager'):
             self.cache_manager.flush()
