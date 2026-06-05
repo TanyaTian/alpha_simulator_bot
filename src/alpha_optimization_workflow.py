@@ -113,6 +113,7 @@ class WorkflowState(TypedDict):
     iteration_count: int
     no_valid_candidates_counter: int
     status_callback: Optional[Callable] # 状态更新回调函数
+    _field_categories: Optional[List[str]]  # 缓存已成功获取的数据集类别，用于跳过后续迭代的重复 API 调用
 
 # ========================================================================
 # 辅助函数
@@ -339,15 +340,22 @@ def _build_data_fields(session, alpha_id: str, state: WorkflowState) -> List[str
     """构建可用字段列表和字段类别，强化数据获取的稳定性"""
     session = ace_lib.check_session_and_relogin(session)
 
-    # 获取 Alpha 所使用的数据集，增加重试机制以应对网络/API不稳定
-    # get_datasets_for_alpha 是一个复合过程，任何环节失效都会导致结果不完整
+    # 检查上一轮是否已成功构建过 field_categories
+    # 如果已有缓存，说明 alpha 的核心数据集字段已成功获取，直接复用上下文
+    cached_categories = state.get("_field_categories")
+    if cached_categories:
+        logger.info(f"Using cached data fields context "
+                    f"({len(state.get('valid_data_fields', set()))} fields, "
+                    f"{len(cached_categories)} categories: {cached_categories}).")
+        return cached_categories
+
+    # 首次构建或上一轮失败：获取 Alpha 所使用的数据集
     all_datasets_df = pd.DataFrame()
     max_retries = 3
     for attempt in range(max_retries):
         try:
-            # get_datasets_for_alpha 内部已使用 safe_api_call，在此增加外层重试
             all_datasets_df, _ = utils.get_datasets_for_alpha(alpha_id, session)
-            
+
             if all_datasets_df is not None and not all_datasets_df.empty:
                 logger.info(f"Successfully fetched {len(all_datasets_df)} fields for alpha {alpha_id}")
                 break
@@ -369,13 +377,13 @@ def _build_data_fields(session, alpha_id: str, state: WorkflowState) -> List[str
         field_categories = list(set(all_datasets_df['category_id'].dropna().tolist()))
     logger.info(f"Identified {len(field_categories)} dataset categories: {field_categories}")
 
-    # 如果已缓存字段数据，直接返回
-    if ("all_fields_df" in state and state["all_fields_df"] is not None
-            and hasattr(state["all_fields_df"], 'empty') and not state["all_fields_df"].empty
-            and "valid_data_fields" in state and state["valid_data_fields"]):
-        logger.info(f"Using {len(state['valid_data_fields'])} existing valid data fields from cache.")
-        return field_categories
+    # 仅当成功获取到核心数据集字段时才保存到上下文，供后续迭代复用
+    # 如果 field_categories 为空说明获取失败，不保存，下一轮会重试
+    if field_categories:
+        state["_field_categories"] = field_categories
+        logger.info(f"Field categories cached to state for subsequent iterations.")
 
+    # 完整构建 all_fields_df 和 valid_data_fields
     settings = state["row_setting"]
     region = settings.get("region")
     universe = settings.get("universe")
@@ -420,6 +428,8 @@ def _build_data_fields(session, alpha_id: str, state: WorkflowState) -> List[str
 
 def _load_knowledge_base(session, field_categories: List[str], fail_names: List[str], state: WorkflowState):
     """加载并整合知识库内容"""
+    # 优先使用上下文中缓存的 field_categories，确保知识库与已构建的数据字段一致
+    field_categories = state.get("_field_categories", field_categories)
 
     # 1. 加载数据集使用指南（去重）
     dataset_tips = []
@@ -1342,6 +1352,7 @@ def run_optimization_workflow(seed_alpha_id: str, status_callback: Optional[Call
         "iteration_count": 0,
         "no_valid_candidates_counter": 0,
         "status_callback": status_callback,
+        "_field_categories": None,
     }
 
     final_state = None

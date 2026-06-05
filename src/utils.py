@@ -1067,7 +1067,7 @@ def main():
 
     # 2. Define region, universe, delay
     region = "USA"
-    universe = "ILLIQUID_MINVOL1M"
+    universe = "TOP3000"
     delay = 1
 
     # 3. 指定要查询的类别 (Categories)
@@ -1106,7 +1106,7 @@ def main():
 
     # 4. Define alpha source and other variables
     # 此处路径需根据实际情况调整
-    alpha_source_path = '/Users/tianyuan/.claude/skills/brain-feature-implementation/data/option8_combined_expressions.json'
+    alpha_source_path = '/Users/tianyuan/.claude/skills/brain-weight-safety-preprocessor/out_put/option9_weight_safe_expressions.json'
     expression_list = sample_alphas_from_file(alpha_source_path, 1)
     
     # 如果需要筛选包含特定字符串的 alpha，可以在此设置 substring
@@ -1116,7 +1116,7 @@ def main():
         print(f"Filtered to {len(expression_list)} alphas containing '{target_substring}'")
 
     decay = 10
-    neutralization = "REVERSION_AND_MOMENTUM"
+    neutralization = "CROWDING"
     truncation = 0.01
     max_trade = "OFF"
 
