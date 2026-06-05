@@ -353,14 +353,16 @@ def _build_data_fields(session, alpha_id: str, state: WorkflowState) -> List[str
                 break
             else:
                 logger.warning(f"Attempt {attempt + 1}: get_datasets_for_alpha returned empty for {alpha_id}")
+                # 返回空是确定性的, 不需要重试
+                break
         except Exception as e:
             logger.error(f"Attempt {attempt + 1}: get_datasets_for_alpha failed: {e}")
-        
-        if attempt < max_retries - 1:
-            sleep_time = (attempt + 1) * 60 # 60s, 120s
-            logger.info(f"Retrying get_datasets_for_alpha in {sleep_time}s...")
-            time.sleep(sleep_time)
-            session = ace_lib.check_session_and_relogin(session)
+
+            if attempt < max_retries - 1:
+                sleep_time = (attempt + 1) * 60 # 60s, 120s
+                logger.info(f"Retrying get_datasets_for_alpha in {sleep_time}s...")
+                time.sleep(sleep_time)
+                session = ace_lib.check_session_and_relogin(session)
 
     field_categories = []
     if all_datasets_df is not None and not all_datasets_df.empty and 'category_id' in all_datasets_df.columns:

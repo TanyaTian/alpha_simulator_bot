@@ -741,79 +741,100 @@ def get_datasets_for_alpha(alpha_id: str, brain_session) -> pd.DataFrame:
     # Safely get alpha details
     alpha_details = safe_api_call(_get_json, brain_session, f"https://api.worldquantbrain.com/alphas/{alpha_id}")
     if not alpha_details:
-        print(f"Error: Could not fetch details for alpha {alpha_id}. Aborting.")
+        logger.warning(f"[get_datasets_for_alpha] EXIT@alpha_details: alpha_details is falsy for {alpha_id} (type={type(alpha_details).__name__}, value={repr(alpha_details)[:200]})")
         return pd.DataFrame(), None
-        
+
     alpha_expression = alpha_details['regular']['code']
     datafields = extract_datafields(alpha_expression, brain_session)
-    print(f"Data fields for alpha {alpha_id}: {datafields}")
+    logger.info(f"[get_datasets_for_alpha] alpha {alpha_id}: expression fields extracted = {datafields} (count={len(datafields)})")
     settings_dict = extract_alpha_settings(alpha_details)
-    
+    logger.info(f"[get_datasets_for_alpha] alpha {alpha_id}: region={settings_dict['region']}, universe={settings_dict['universe']}, delay={settings_dict['delay']}")
+
     # Use search parameter to get data fields, then keep only exact matches
     data_fields_list = []
+    api_fetch_errors = 0
+    api_empty_results = 0
+    no_exact_match = 0
     for data_field in datafields:
         # Optimization: Use safe_api_call and add delay to avoid rate limiting
-        search_results = safe_api_call(
-            ace.get_datafields, 
-            brain_session, 
-            region=settings_dict['region'], 
-            universe=settings_dict['universe'], 
-            delay=settings_dict['delay'], 
-            data_type='ALL', 
-            search=data_field
-        )
+        try:
+            search_results = safe_api_call(
+                ace.get_datafields,
+                brain_session,
+                region=settings_dict['region'],
+                universe=settings_dict['universe'],
+                delay=settings_dict['delay'],
+                data_type='ALL',
+                search=data_field
+            )
+        except Exception as e:
+            logger.warning(f"[get_datasets_for_alpha] safe_api_call FAILED for field '{data_field}': {e}")
+            api_fetch_errors += 1
+            continue
         time.sleep(1) # Small delay between queries to avoid 429
 
         # Keep only exact matches in the search results
-        if search_results is not None and not search_results.empty:
-            exact_matches = search_results[search_results['id'] == data_field]
-            if not exact_matches.empty:
-                data_fields_list.append(exact_matches)
-    
+        if search_results is None:
+            logger.warning(f"[get_datasets_for_alpha] search_results is None for field '{data_field}'")
+            api_empty_results += 1
+            continue
+        if search_results.empty:
+            logger.warning(f"[get_datasets_for_alpha] search_results is empty DataFrame for field '{data_field}'")
+            api_empty_results += 1
+            continue
+
+        if 'id' not in search_results.columns:
+            logger.warning(f"[get_datasets_for_alpha] 'id' column missing in search_results for field '{data_field}'. Columns: {list(search_results.columns)}")
+            no_exact_match += 1
+            continue
+
+        exact_matches = search_results[search_results['id'] == data_field]
+        if not exact_matches.empty:
+            data_fields_list.append(exact_matches)
+        else:
+            logger.warning(f"[get_datasets_for_alpha] No exact match for field '{data_field}' in {len(search_results)} results")
+            no_exact_match += 1
+
+    logger.info(f"[get_datasets_for_alpha] field search summary: matched={len(data_fields_list)}, api_errors={api_fetch_errors}, api_empty={api_empty_results}, no_match={no_exact_match}")
+
     data_fields = pd.DataFrame()
     if data_fields_list:
         data_fields = pd.concat(data_fields_list, ignore_index=True)
-    
-    print(f"Exact matched data fields details:")
-    print(f"Number of matches: {len(data_fields)}")
-    if not data_fields.empty:
-        pd.set_option('display.max_columns', None)
-        pd.set_option('display.width', None)
-        print(data_fields.to_string())
-    
-    print("\n" + "="*50)
-    print("Next step: Query datasets based on dataset_id")
-    print("="*50)
-    
+
     if data_fields.empty:
+        logger.warning(f"[get_datasets_for_alpha] EXIT@empty_data_fields: no exact field matches found for {alpha_id}")
+        print(f"Data fields for alpha {alpha_id}: {datafields}")
+        print(f"Exact matched data fields details:")
+        print(f"Number of matches: {len(data_fields)}")
         return pd.DataFrame(), None
 
     dataset_ids = list(set(data_fields['dataset_id'].tolist()))
     dataset_ids = [did for did in dataset_ids if did != 'pv1']
-    print(f"Dataset IDs (after deduplication and filtering 'pv1'): {dataset_ids}")
+    logger.info(f"[get_datasets_for_alpha] dataset_ids (after filtering pv1): {dataset_ids}")
 
     if not dataset_ids:
+        logger.warning(f"[get_datasets_for_alpha] EXIT@no_dataset_ids: all fields belong to pv1 for {alpha_id}")
         return pd.DataFrame(), None
 
     datasets_list = []
     for dataset_id in dataset_ids:
         dataset_info = get_datafields_with_cache(
-            brain_session, 
+            brain_session,
             region=settings_dict['region'],
             universe=settings_dict['universe'],
             delay=settings_dict['delay'],
             data_type='ALL',
             dataset_id=dataset_id
         )
-        
+
         if dataset_info is not None and not dataset_info.empty:
             datasets_list.append(dataset_info)
-    
-    all_datasets = pd.concat(datasets_list, ignore_index=True) if datasets_list else pd.DataFrame()
-    
-    print(f"\nAll datasets information:")
-    print(f"Number of datasets: {len(datasets_list)}")
+        else:
+            logger.warning(f"[get_datasets_for_alpha] dataset '{dataset_id}' returned empty/None")
 
+    all_datasets = pd.concat(datasets_list, ignore_index=True) if datasets_list else pd.DataFrame()
+
+    logger.info(f"[get_datasets_for_alpha] SUCCESS for {alpha_id}: {len(all_datasets)} fields from {len(datasets_list)} datasets")
     return all_datasets, dataset_ids[0] if dataset_ids else None
 
 def extract_alpha_settings(alpha_details):
@@ -1046,12 +1067,12 @@ def main():
 
     # 2. Define region, universe, delay
     region = "USA"
-    universe = "TOP3000"
+    universe = "ILLIQUID_MINVOL1M"
     delay = 1
 
     # 3. 指定要查询的类别 (Categories)
     # 您只需要在此处手动输入类别，例如 ["analyst", "fundamental"]
-    categories_to_query = ["institutions"]
+    categories_to_query = ["option"]
     
     dataset_ids = []
     default_params = {
@@ -1085,7 +1106,7 @@ def main():
 
     # 4. Define alpha source and other variables
     # 此处路径需根据实际情况调整
-    alpha_source_path = '/Users/tianyuan/.claude/skills/brain-report-to-expressions/out_put/institutions4_weight_safe_expressions.json'
+    alpha_source_path = '/Users/tianyuan/.claude/skills/brain-feature-implementation/data/option8_combined_expressions.json'
     expression_list = sample_alphas_from_file(alpha_source_path, 1)
     
     # 如果需要筛选包含特定字符串的 alpha，可以在此设置 substring
