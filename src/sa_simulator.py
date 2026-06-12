@@ -181,9 +181,10 @@ class SASimulator:
                 sharpe_value = is_stats['sharpe'].iloc[0]
                 fitness_value = is_stats['fitness'].iloc[0]
                 
-                # 合格条件: Sharpe和Fitness都大于4
-                if sharpe_value > 4 and fitness_value > 4:
-                    self.logger.info(f"Alpha {alpha_id} qualified with Sharpe: {sharpe_value}, Fitness: {fitness_value}")
+                # 合格条件: Sharpe和Fitness都大于4 (ASI/GLB 为 3)
+                threshold = 3 if self.region in ['ASI', 'GLB'] else 4
+                if sharpe_value > threshold and fitness_value > threshold:
+                    self.logger.info(f"Alpha {alpha_id} qualified with Sharpe: {sharpe_value}, Fitness: {fitness_value} (Threshold: {threshold})")
                     
                     # 检查 is_tests 中是否包含 FAIL
                     if 'result' in is_tests.columns and (is_tests['result'] == 'FAIL').any():
