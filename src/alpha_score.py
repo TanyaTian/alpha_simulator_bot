@@ -9,7 +9,7 @@ MIN_ACTIVE_YEARS = 8             # 最少活跃年数
 STRICT_SHARPE_THRESHOLD = 1.3    # 夏普率硬门槛 (必须为正)
 STRICT_FITNESS_THRESHOLD = 0.8   # Fitness 硬门槛 (必须为正)
 MIN_YEARLY_SHARPE = -5.0         # 单年夏普最低允许值
-STRICT_MARGIN_THRESHOLD = 0.0007 # Margin 硬门槛
+STRICT_MARGIN_THRESHOLD = 0.0005 # Margin 硬门槛
 
 def _passes_hard_filters(alpha: Dict[str, Any]) -> bool:
     """
