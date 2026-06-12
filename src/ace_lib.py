@@ -133,7 +133,11 @@ def start_session() -> SingleSession:
     s = SingleSession()
     s.auth = get_credentials()
     r = s.post(brain_api_url + "/authentication", timeout=(10, 60))
-    logger.debug(f"New session created (ID: {id(s)}) with authentication response: {r.status_code}, {r.json()}")
+    try:
+        resp_body = r.json()
+    except Exception:
+        resp_body = f"<non-json response, text length={len(r.text)}>"
+    logger.debug(f"New session created (ID: {id(s)}) with authentication response: {r.status_code}, {resp_body}")
     if r.status_code == requests.status_codes.codes.unauthorized:
         if r.headers["WWW-Authenticate"] == "persona":
             print(
@@ -295,10 +299,13 @@ def check_session_and_relogin(s: SingleSession) -> SingleSession:
             logger.debug('Session less than 2000 seconds')
             try:
                 s = start_session()
-            except Exception:
-                logger.info('Trying re-login, wait 100 seconds')
+            except Exception as e:
+                logger.info(f'Trying re-login (first attempt failed: {e}), wait 100 seconds')
                 time.sleep(100)
-                s = start_session()
+                try:
+                    s = start_session()
+                except Exception as e2:
+                    logger.error(f'Re-login failed on second attempt: {e2}. Keeping existing session.')
         logger.debug(f"Session (ID: {id(s)}) after check and relogin")
     return s
 
@@ -324,6 +331,7 @@ def start_simulation(s: SingleSession, simulate_data: Union[list[dict], dict]) -
 def simulation_progress(
     s: SingleSession,
     simulate_response: requests.Response,
+    poll_timeout: float = 3600,
 ) -> dict:
     """
     Monitor the progress of a simulation and return the result when complete.
@@ -331,6 +339,7 @@ def simulation_progress(
     Args:
         s (SingleSession): An authenticated session object.
         simulate_response (requests.Response): The response from starting the simulation.
+        poll_timeout (float): Maximum number of seconds to poll before giving up. Defaults to 3600.
 
     Returns:
         dict: A dictionary containing the completion status and simulation result.
@@ -345,7 +354,11 @@ def simulation_progress(
     simulation_progress_url = simulate_response.headers["Location"]
     error_flag = False
     retry_count = 0
+    start_time = time.monotonic()
     while True:
+        if time.monotonic() - start_time > poll_timeout:
+            logger.error(f"Simulation progress polling timed out after {poll_timeout}s: {simulation_progress_url}")
+            return {"completed": False, "result": {}}
         simulation_progress_response = s.get(simulation_progress_url, timeout=(10, 60))
         if simulation_progress_response.status_code // 100 != 2:
             logger.error(
@@ -417,6 +430,7 @@ def get_simulation_result_json(s: SingleSession, alpha_id: str) -> dict:
 def multisimulation_progress(
     s: SingleSession,
     simulate_response: requests.Response,
+    poll_timeout: float = 3600,
 ) -> dict:
     """
     Monitor the progress of multiple simulations and return the results when complete.
@@ -424,6 +438,7 @@ def multisimulation_progress(
     Args:
         s (SingleSession): An authenticated session object.
         simulate_response (requests.Response): The response from starting the simulations.
+        poll_timeout (float): Maximum number of seconds to poll before giving up. Defaults to 3600.
 
     Returns:
         dict: A dictionary containing the completion status and simulation results.
@@ -437,7 +452,11 @@ def multisimulation_progress(
 
     simulation_progress_url = simulate_response.headers["Location"]
     error_flag = False
+    start_time = time.monotonic()
     while True:
+        if time.monotonic() - start_time > poll_timeout:
+            logger.error(f"Multi-simulation progress polling timed out after {poll_timeout}s: {simulation_progress_url}")
+            return {"completed": False, "result": {}}
         simulation_progress_response = s.get(simulation_progress_url, timeout=(10, 60))
         if simulation_progress_response.status_code // 100 != 2:
             time.sleep(30)
@@ -661,6 +680,7 @@ def get_check_submission(s: SingleSession, alpha_id: str) -> pd.DataFrame:
 def simulate_multi_alpha(
     s: SingleSession,
     simulate_data_list: list,
+    poll_timeout: float = 3600,
 ) -> list[dict]:
     """
     Simulate a list of alphas using multi-simulation.
@@ -673,6 +693,7 @@ def simulate_multi_alpha(
         s (SingleSession): An authenticated session object.
         simulate_data (dict): A list of dictionaries, each containing the simulation parameters for the alpha.
             These should include all necessary information such as alpha type, settings, and expressions.
+        poll_timeout (float): Maximum seconds to poll for progress. Defaults to 3600.
 
     Returns:
         list: A list of dictionaries, each containing:
@@ -685,9 +706,9 @@ def simulate_multi_alpha(
 
     s = check_session_and_relogin(s)
     if len(simulate_data_list) == 1:
-        return [simulate_single_alpha(s, simulate_data_list[0])]
+        return [simulate_single_alpha(s, simulate_data_list[0], poll_timeout=poll_timeout)]
     simulate_response = start_simulation(s, simulate_data_list)
-    simulation_result = multisimulation_progress(s, simulate_response)
+    simulation_result = multisimulation_progress(s, simulate_response, poll_timeout=poll_timeout)
 
     if not simulation_result["completed"]:
         return [{"alpha_id": None, "simulate_data": x} for x in simulate_data_list]
@@ -830,6 +851,7 @@ def get_specified_alpha_stats(
 def simulate_single_alpha(
     s: SingleSession,
     simulate_data: dict,
+    poll_timeout: float = 3600,
 ) -> dict:
     """
     Simulate a single alpha using the provided session and simulation data.
@@ -842,6 +864,7 @@ def simulate_single_alpha(
         s (SingleSession): An authenticated session object.
         simulate_data (dict): A dictionary containing the simulation parameters for the alpha.
             This should include all necessary information such as alpha type, settings, and expressions.
+        poll_timeout (float): Maximum seconds to poll for progress. Defaults to 3600.
 
     Returns:
         dict: A dictionary containing:
@@ -854,7 +877,7 @@ def simulate_single_alpha(
 
     s = check_session_and_relogin(s)
     simulate_response = start_simulation(s, simulate_data)
-    simulation_result = simulation_progress(s, simulate_response)
+    simulation_result = simulation_progress(s, simulate_response, poll_timeout=poll_timeout)
 
     if not simulation_result["completed"]:
         return {"alpha_id": None, "simulate_data": simulate_data}

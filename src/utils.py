@@ -455,7 +455,7 @@ def get_alphas_from_data(data_rows, min_sharpe, min_fitness, mode="track", regio
             
     return output
 
-def safe_api_call(func, *args, max_retries=3, initial_delay=60, call_timeout=300, **kwargs):
+def safe_api_call(func, *args, max_retries=5, initial_delay=60, call_timeout=300, **kwargs):
     """
     Safely execute a function (usually an API call) with a retry mechanism
     and per-call timeout protection.
@@ -1072,7 +1072,7 @@ def main():
 
     # 3. 指定要查询的类别 (Categories)
     # 您只需要在此处手动输入类别，例如 ["analyst", "fundamental"]
-    categories_to_query = ["option"]
+    categories_to_query = ["risk"]
     
     dataset_ids = []
     default_params = {
@@ -1106,7 +1106,7 @@ def main():
 
     # 4. Define alpha source and other variables
     # 此处路径需根据实际情况调整
-    alpha_source_path = '/Users/tianyuan/.claude/skills/brain-weight-safety-preprocessor/out_put/option9_weight_safe_expressions.json'
+    alpha_source_path = '/Users/tianyuan/.claude/skills/brain-weight-safety-preprocessor/out_put/risk88_weight_safe_expressions.json'
     expression_list = sample_alphas_from_file(alpha_source_path, 1)
     
     # 如果需要筛选包含特定字符串的 alpha，可以在此设置 substring

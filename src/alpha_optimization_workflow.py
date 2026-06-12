@@ -120,6 +120,33 @@ class WorkflowState(TypedDict):
 # ========================================================================
 
 
+def _safe_relogin(session):
+    """Safely check and refresh the BRAIN session. Returns the existing session if re-login fails."""
+    try:
+        return ace_lib.check_session_and_relogin(session)
+    except Exception as e:
+        logger.error(f"Session re-login failed: {e}. Continuing with existing session.")
+        return session
+
+
+def _safe_node(node_fn):
+    """
+    Decorator that wraps a LangGraph node function to prevent uncaught exceptions
+    from crashing the entire workflow. If a node throws, the state is marked as
+    'failed' and returned cleanly, allowing continue_or_end to decide the next step.
+    """
+    def wrapper(state: WorkflowState) -> WorkflowState:
+        try:
+            return node_fn(state)
+        except Exception as e:
+            logger.error(f"Node '{node_fn.__name__}' crashed with uncaught exception: {e}")
+            state["status"] = "failed"
+            state.setdefault("error_log", []).append(
+                f"Node '{node_fn.__name__}' crashed: {e}"
+            )
+            return state
+    return wrapper
+
 
 def _load_field_metadata_cache(settings: dict) -> dict:
     """Load the field metadata cache from disk."""
@@ -265,7 +292,7 @@ def _load_region_knowledge(session, state: WorkflowState):
 def _fetch_alpha_details(session, seed_alpha_id: str, state: WorkflowState) -> bool:
     """获取 Alpha 详情（代码、设置）"""
     try:
-        session = ace_lib.check_session_and_relogin(session)
+        session = _safe_relogin(session)
         alpha_details = utils.safe_api_call(ace_lib.get_simulation_result_json, session, seed_alpha_id)
 
         if not alpha_details:
@@ -288,7 +315,7 @@ def _fetch_alpha_details(session, seed_alpha_id: str, state: WorkflowState) -> b
 
 def _get_performance_report(session, seed_alpha_id: str, state: WorkflowState) -> List[str]:
     """获取提交检查报告和年度统计，返回 FAIL 项名称列表"""
-    session = ace_lib.check_session_and_relogin(session)
+    session = _safe_relogin(session)
     check_df = utils.safe_api_call(ace_lib.get_check_submission, session, seed_alpha_id)
     fail_names = []
 
@@ -338,7 +365,7 @@ def _get_performance_report(session, seed_alpha_id: str, state: WorkflowState) -
 
 def _build_data_fields(session, alpha_id: str, state: WorkflowState) -> List[str]:
     """构建可用字段列表和字段类别，强化数据获取的稳定性"""
-    session = ace_lib.check_session_and_relogin(session)
+    session = _safe_relogin(session)
 
     # 检查上一轮是否已成功构建过 field_categories
     # 如果已有缓存，说明 alpha 的核心数据集字段已成功获取，直接复用上下文
@@ -370,7 +397,7 @@ def _build_data_fields(session, alpha_id: str, state: WorkflowState) -> List[str
                 sleep_time = (attempt + 1) * 60 # 60s, 120s
                 logger.info(f"Retrying get_datasets_for_alpha in {sleep_time}s...")
                 time.sleep(sleep_time)
-                session = ace_lib.check_session_and_relogin(session)
+                session = _safe_relogin(session)
 
     field_categories = []
     if all_datasets_df is not None and not all_datasets_df.empty and 'category_id' in all_datasets_df.columns:
@@ -494,36 +521,41 @@ def _check_correlations(session, alpha_id: str):
     """检查 prod/self/power pool 相关性，返回 (是否通过, 相关性数值字典)"""
     corr_values = {"pc": 0.0, "sc": 0.0, "ppc": 0.0}
 
-    # Production correlation
-    prod_corr_result = utils.safe_api_call(ace_lib.check_prod_corr_test, session, alpha_id=alpha_id, call_timeout=900)
-    pc = prod_corr_result['value'].max() if prod_corr_result is not None and not prod_corr_result.empty else 1.0
-    corr_values["pc"] = pc
-    logger.info(f"Alpha {alpha_id} - Production correlation: {pc:.4f}")
-    if pc >= 0.7:
-        logger.info(f"Alpha {alpha_id} FAILED: pc={pc:.4f} >= 0.7")
-        return False, corr_values
+    try:
+        # Production correlation
+        prod_corr_result = utils.safe_api_call(ace_lib.check_prod_corr_test, session, alpha_id=alpha_id, call_timeout=900)
+        pc = prod_corr_result['value'].max() if prod_corr_result is not None and not prod_corr_result.empty else 1.0
+        corr_values["pc"] = pc
+        logger.info(f"Alpha {alpha_id} - Production correlation: {pc:.4f}")
+        if pc >= 0.7:
+            logger.info(f"Alpha {alpha_id} FAILED: pc={pc:.4f} >= 0.7")
+            return False, corr_values
 
-    # Self correlation
-    self_corr_result = utils.safe_api_call(ace_lib.check_self_corr_test, session, alpha_id=alpha_id, call_timeout=900)
-    sc = self_corr_result['value'].max() if self_corr_result is not None and not self_corr_result.empty else 1.0
-    corr_values["sc"] = sc
-    logger.info(f"Alpha {alpha_id} - Self correlation: {sc:.4f}")
-    if sc >= 0.5:
-        logger.info(f"Alpha {alpha_id} FAILED: sc={sc:.4f} >= 0.5")
-        return False, corr_values
+        # Self correlation
+        self_corr_result = utils.safe_api_call(ace_lib.check_self_corr_test, session, alpha_id=alpha_id, call_timeout=900)
+        sc = self_corr_result['value'].max() if self_corr_result is not None and not self_corr_result.empty else 1.0
+        corr_values["sc"] = sc
+        logger.info(f"Alpha {alpha_id} - Self correlation: {sc:.4f}")
+        if sc >= 0.5:
+            logger.info(f"Alpha {alpha_id} FAILED: sc={sc:.4f} >= 0.5")
+            return False, corr_values
 
-    # Power pool correlation
-    ppc_result = utils.safe_api_call(ace_lib_ext.check_power_pool_corr_test, session, alpha_id=alpha_id, call_timeout=900)
-    ppc = ppc_result['value'].max() if (ppc_result is not None and not ppc_result.empty
-                                         and ppc_result['value'].notna().any()) else 0.0
-    corr_values["ppc"] = ppc
-    logger.info(f"Alpha {alpha_id} - Power Pool correlation: {ppc:.4f}")
-    if ppc >= 0.5:
-        logger.info(f"Alpha {alpha_id} FAILED: ppc={ppc:.4f} >= 0.5")
-        return False, corr_values
+        # Power pool correlation
+        ppc_result = utils.safe_api_call(ace_lib_ext.check_power_pool_corr_test, session, alpha_id=alpha_id, call_timeout=900)
+        ppc = ppc_result['value'].max() if (ppc_result is not None and not ppc_result.empty
+                                             and ppc_result['value'].notna().any()) else 0.0
+        corr_values["ppc"] = ppc
+        logger.info(f"Alpha {alpha_id} - Power Pool correlation: {ppc:.4f}")
+        if ppc >= 0.5:
+            logger.info(f"Alpha {alpha_id} FAILED: ppc={ppc:.4f} >= 0.5")
+            return False, corr_values
 
-    logger.info(f"Alpha {alpha_id} PASSED all correlation checks.")
-    return True, corr_values
+        logger.info(f"Alpha {alpha_id} PASSED all correlation checks.")
+        return True, corr_values
+    except Exception as e:
+        logger.error(f"Error checking correlations for alpha {alpha_id}: {e}")
+        # On error, we treat it as failed to be safe, but we don't crash the workflow.
+        return False, corr_values
 
 # ========================================================================
 # LangGraph 节点 1: 获取种子详情
@@ -555,7 +587,7 @@ def fetch_seed_details(state: WorkflowState) -> WorkflowState:
     logger.info(f"History: {total_hist} alphas | Repeat rate: {repeat_rate:.2f}%")
     logger.info(f"{'='*60}")
 
-    session = ace_lib.check_session_and_relogin(state["session"])
+    session = _safe_relogin(state["session"])
     state["session"] = session
     seed_alpha_id = state["seed_alpha_id"]
 
@@ -629,7 +661,7 @@ def propose_and_generate_batch(state: WorkflowState) -> WorkflowState:
                                   simulated_count=simulated_count)
     logger.info("--- Proposing and generating alpha batch via LLM ---")
 
-    session = ace_lib.check_session_and_relogin(state["session"])
+    session = _safe_relogin(state["session"])
     state["session"] = session
 
     # 1. 获取算子信息
@@ -949,7 +981,7 @@ def batch_simulate_and_select_best(state: WorkflowState) -> WorkflowState:
     if state.get("status") == "failed":
         logger.warning("Node 'batch_simulate_and_select_best' skipped due to failed status.")
         return state
-    session = ace_lib.check_session_and_relogin(state["session"])
+    session = _safe_relogin(state["session"])
     state["session"] = session
     state["iteration_count"] += 1
 
@@ -999,20 +1031,22 @@ def batch_simulate_and_select_best(state: WorkflowState) -> WorkflowState:
         logger.info(f"--- Batch {idx + 1}/{len(chunks)} ({len(chunk)} alphas) ---")
 
         while attempts < max_retries:
+            executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
             try:
-                with concurrent.futures.ThreadPoolExecutor() as executor:
-                    future = executor.submit(ace_lib.simulate_multi_alpha, session, chunk)
-                    chunk_results = future.result(timeout=timeout_duration)
+                future = executor.submit(ace_lib.simulate_multi_alpha, session, chunk, poll_timeout=1900)
+                chunk_results = future.result(timeout=timeout_duration)
 
                 if chunk_results:
                     batch_results.extend(chunk_results)
                     logger.info(f"Batch {idx + 1} completed successfully.")
+                    executor.shutdown(wait=True)
                     break
                 else:
                     raise ValueError(f"Batch {idx + 1} returned no results.")
 
             except (concurrent.futures.TimeoutError, RemoteDisconnected, ConnectionError, Exception) as e:
                 attempts += 1
+                executor.shutdown(wait=False)
                 error_msg = f"Batch {idx + 1}, attempt {attempts}/{max_retries}: {e}"
                 logger.error(error_msg)
                 state["error_log"].append(error_msg)
@@ -1020,7 +1054,7 @@ def batch_simulate_and_select_best(state: WorkflowState) -> WorkflowState:
                     logger.error(f"Batch {idx + 1} FAILED after {max_retries} attempts.")
                     break
                 time.sleep(300)
-                session = ace_lib.check_session_and_relogin(session)
+                session = _safe_relogin(session)
                 state["session"] = session
 
     logger.info(f"All batches processed. Results: {len(batch_results)}/{len(sim_jobs)}")
@@ -1030,7 +1064,7 @@ def batch_simulate_and_select_best(state: WorkflowState) -> WorkflowState:
     historical_alphas = state.get('historical_alphas', [])
     repeat_historical_alphas = state.get('repeat_historical_alphas', [])
     expressions_added_count = 0
-    session = ace_lib.check_session_and_relogin(session)
+    session = _safe_relogin(session)
 
     # 历史去重集合
     def _parse_hist_entry(entry):
@@ -1064,142 +1098,143 @@ def batch_simulate_and_select_best(state: WorkflowState) -> WorkflowState:
                 logger.warning(f"Could not find expression in details for alpha {alpha_id}")
                 continue
             neutralization = alpha_details.get('settings', {}).get('neutralization', 'UNKNOWN')
-        except Exception as e:
-            logger.error(f"Failed to fetch details for alpha {alpha_id}: {e}")
-            continue
 
-        check_df = utils.safe_api_call(ace_lib.get_check_submission, session, alpha_id)
-        has_fail = 'FAIL' in check_df['result'].unique() if check_df is not None else True
+            check_df = utils.safe_api_call(ace_lib.get_check_submission, session, alpha_id)
+            has_fail = 'FAIL' in check_df['result'].unique() if check_df is not None else True
 
-        # 仅当其他检查全部通过时才调用相关性检查（避免浪费平台计算资源）
-        corr_values = None
-        corr_passed = True
-        if not has_fail:
-            corr_passed, corr_values = _check_correlations(session, alpha_id)
+            # 仅当其他检查全部通过时才调用相关性检查（避免浪费平台计算资源）
+            corr_values = None
+            corr_passed = True
+            if not has_fail:
+                corr_passed, corr_values = _check_correlations(session, alpha_id)
 
-        stats_df = utils.safe_api_call(ace_lib.get_alpha_yearly_stats, session, alpha_id)
+            stats_df = utils.safe_api_call(ace_lib.get_alpha_yearly_stats, session, alpha_id)
 
-        # 自动标记通过硬过滤的 Alpha，同时收集候选数据供后续评分
-        if alpha_details and check_df is not None and stats_df is not None:
-            candidate_for_tagging = {
-                "id": alpha_id,
-                "details": alpha_details,
-                "check_df": check_df,
-                "yearly_stats": stats_df,
-                "is": alpha_details.get("is", {})
-            }
-            candidates_for_evaluation.append(candidate_for_tagging)
-            if _passes_hard_filters(candidate_for_tagging):
-                try:
-                    if corr_values is not None:
-                        pc_name = f"{corr_values.get('pc', 0.0):.4f}"
-                        utils.safe_api_call(ace_lib.set_alpha_properties, session,
-                                            alpha_id=alpha_id, tags=["deep_search_result"], name=pc_name)
-                        logger.info(f"Alpha {alpha_id} PASSED hard filters - tagged and named {pc_name}")
-                    else:
-                        utils.safe_api_call(ace_lib.set_alpha_properties, session,
-                                            alpha_id=alpha_id, tags=["deep_search_result"])
-                        logger.info(f"Alpha {alpha_id} PASSED hard filters - tagged 'deep_search_result'")
-                except Exception as e:
-                    logger.warning(f"Could not tag alpha {alpha_id}: {e}")
-            else:
-                logger.info(f"Alpha {alpha_id} FAILED hard filters - skipping tag.")
-
-        # 更新历史记录（去重）
-        current_config = (expression, neutralization)
-        if current_config in seen_configs:
-            repeat_historical_alphas.append(f"Expression: {expression} | Neutralization: {neutralization}")
-        else:
-            # 提取关键检查指标
-            stats_str_parts = []
-            added_prod_corr = False
-            added_self_corr = False
-            if check_df is not None and not check_df.empty:
-                check_dict = check_df.set_index('name')['value'].to_dict()
-                metrics_to_include = [
-                    'LOW_SHARPE', 'LOW_FITNESS', 'LOW_TURNOVER',
-                    'CONCENTRATED_WEIGHT', 'LOW_SUB_UNIVERSE_SHARPE',
-                    'LOW_ROBUST_UNIVERSE_SHARPE', 'LOW_2Y_SHARPE',
-                    'LOW_ASI_JPN_SHARPE', 'LOW_INVESTABILITY_CONSTRAINED_SHARPE',
-                    'LOW_ROBUST_UNIVERSE_SHARPE.WITH_RATIO', 'LOW_ROBUST_UNIVERSE_RETURNS',
-                    'IS_LADDER_SHARPE', 'SELF_CORRELATION', 'PROD_CORRELATION'
-                ]
-                for metric in metrics_to_include:
-                    value = check_dict.get(metric)
-                    if pd.notna(value):
-                        if isinstance(value, float):
-                            val_str = f"{value:.4f}"
+            # 自动标记通过硬过滤的 Alpha，同时收集候选数据供后续评分
+            if alpha_details and check_df is not None and stats_df is not None:
+                candidate_for_tagging = {
+                    "id": alpha_id,
+                    "details": alpha_details,
+                    "check_df": check_df,
+                    "yearly_stats": stats_df,
+                    "is": alpha_details.get("is", {})
+                }
+                candidates_for_evaluation.append(candidate_for_tagging)
+                if _passes_hard_filters(candidate_for_tagging):
+                    try:
+                        if corr_values is not None:
+                            pc_name = f"{corr_values.get('pc', 0.0):.4f}"
+                            utils.safe_api_call(ace_lib.set_alpha_properties, session,
+                                                alpha_id=alpha_id, tags=["deep_search_result"], name=pc_name)
+                            logger.info(f"Alpha {alpha_id} PASSED hard filters - tagged and named {pc_name}")
                         else:
-                            val_str = f"{value}"
-                        stats_str_parts.append(f"'{metric}': {val_str}")
-
-                        if metric == 'PROD_CORRELATION':
-                            added_prod_corr = True
-                            logger.info(f"Alpha {alpha_id} - Extracted PROD_CORRELATION from checks: {val_str}")
-                        elif metric == 'SELF_CORRELATION':
-                            added_self_corr = True
-                            logger.info(f"Alpha {alpha_id} - Extracted SELF_CORRELATION from checks: {val_str}")
-            # 追加 margin（始终包含）
-            margin = alpha_details.get("is", {}).get("margin")
-            if margin is not None and pd.notna(margin):
-                stats_str_parts.append(f"'margin': {margin:.6f}")
-            # 仅当实际调用了相关性检查时才追加相关性数据
-            if corr_values is not None:
-                if not added_prod_corr:
-                    stats_str_parts.append(f"'pc': {corr_values['pc']:.4f}")
-                if not added_self_corr:
-                    stats_str_parts.append(f"'sc': {corr_values['sc']:.4f}")
-                stats_str_parts.append(f"'ppc': {corr_values['ppc']:.4f}")
-            stats_str = ", ".join(stats_str_parts)
-            historical_alpha_entry = f"Expression: {expression} | Neutralization: {neutralization} | Checks: {{ {stats_str} }}"
-            historical_alphas.append(historical_alpha_entry)
-            seen_configs.add(current_config)
-            expressions_added_count += 1
-
-        # 检查是否直接成功（零 FAIL + 充足数据 + 通过相关性检查）
-        if stats_df is not None:
-            active_years = (stats_df['sharpe'] != 0.0).sum()
-
-            if not has_fail and active_years >= 8:
-                if corr_passed:
-                    state["status"] = "succeeded"
-                    state["success_id"] = alpha_id
-                    state['historical_alphas'] = historical_alphas
-                    state['repeat_historical_alphas'] = repeat_historical_alphas
-                    logger.info(f"SUCCESS! Alpha {alpha_id} passed all checks and correlations!")
-                    _log_iteration_summary(state)
-                    logger.info("--- Node 'batch_simulate_and_select_best' completed (success). ---")
-                    return state
+                            utils.safe_api_call(ace_lib.set_alpha_properties, session,
+                                                alpha_id=alpha_id, tags=["deep_search_result"])
+                            logger.info(f"Alpha {alpha_id} PASSED hard filters - tagged 'deep_search_result'")
+                    except Exception as e:
+                        logger.warning(f"Could not tag alpha {alpha_id}: {e}")
                 else:
-                    logger.info(f"Alpha {alpha_id} passed checks but failed correlations.")
+                    logger.info(f"Alpha {alpha_id} FAILED hard filters - skipping tag.")
 
-            # 数据不足：移除不良字段
-            if 0 < active_years < 8:
-                logger.info(f"Alpha {alpha_id} has insufficient data ({active_years} years). Removing problematic fields...")
-                settings = state["row_setting"]
-                region = settings.get("region")
-                universe = settings.get("universe")
-                delay = settings.get("delay", 1)
+            # 更新历史记录（去重）
+            current_config = (expression, neutralization)
+            if current_config in seen_configs:
+                repeat_historical_alphas.append(f"Expression: {expression} | Neutralization: {neutralization}")
+            else:
+                # 提取关键检查指标
+                stats_str_parts = []
+                added_prod_corr = False
+                added_self_corr = False
+                if check_df is not None and not check_df.empty:
+                    check_dict = check_df.set_index('name')['value'].to_dict()
+                    metrics_to_include = [
+                        'LOW_SHARPE', 'LOW_FITNESS', 'LOW_TURNOVER',
+                        'CONCENTRATED_WEIGHT', 'LOW_SUB_UNIVERSE_SHARPE',
+                        'LOW_ROBUST_UNIVERSE_SHARPE', 'LOW_2Y_SHARPE',
+                        'LOW_ASI_JPN_SHARPE', 'LOW_INVESTABILITY_CONSTRAINED_SHARPE',
+                        'LOW_ROBUST_UNIVERSE_SHARPE.WITH_RATIO', 'LOW_ROBUST_UNIVERSE_RETURNS',
+                        'IS_LADDER_SHARPE', 'SELF_CORRELATION', 'PROD_CORRELATION'
+                    ]
+                    for metric in metrics_to_include:
+                        value = check_dict.get(metric)
+                        if pd.notna(value):
+                            if isinstance(value, float):
+                                val_str = f"{value:.4f}"
+                            else:
+                                val_str = f"{value}"
+                            stats_str_parts.append(f"'{metric}': {val_str}")
 
-                grouping_fields_df = get_datafields_with_cache(session, region=region, universe=universe,
-                                                                delay=delay, data_type='GROUP', dataset_id='pv1')
-                price_fields_df = get_datafields_with_cache(session, region=region, universe=universe,
-                                                             delay=delay, data_type='MATRIX', dataset_id='pv1')
+                            if metric == 'PROD_CORRELATION':
+                                added_prod_corr = True
+                                logger.info(f"Alpha {alpha_id} - Extracted PROD_CORRELATION from checks: {val_str}")
+                            elif metric == 'SELF_CORRELATION':
+                                added_self_corr = True
+                                logger.info(f"Alpha {alpha_id} - Extracted SELF_CORRELATION from checks: {val_str}")
+                # 追加 margin（始终包含）
+                margin = alpha_details.get("is", {}).get("margin")
+                if margin is not None and pd.notna(margin):
+                    stats_str_parts.append(f"'margin': {margin:.6f}")
+                # 仅当实际调用了相关性检查时才追加相关性数据
+                if corr_values is not None:
+                    if not added_prod_corr:
+                        stats_str_parts.append(f"'pc': {corr_values['pc']:.4f}")
+                    if not added_self_corr:
+                        stats_str_parts.append(f"'sc': {corr_values['sc']:.4f}")
+                    stats_str_parts.append(f"'ppc': {corr_values['ppc']:.4f}")
+                stats_str = ", ".join(stats_str_parts)
+                historical_alpha_entry = f"Expression: {expression} | Neutralization: {neutralization} | Checks: {{ {stats_str} }}"
+                historical_alphas.append(historical_alpha_entry)
+                seen_configs.add(current_config)
+                expressions_added_count += 1
 
-                pv1_fields = set()
-                if grouping_fields_df is not None:
-                    pv1_fields.update(grouping_fields_df['id'].tolist())
-                if price_fields_df is not None:
-                    pv1_fields.update(price_fields_df['id'].tolist())
+            # 检查是否直接成功（零 FAIL + 充足数据 + 通过相关性检查）
+            if stats_df is not None:
+                active_years = (stats_df['sharpe'] != 0.0).sum()
 
-                used_fields = utils.extract_datafields(expression, session)
-                fields_to_remove = {field for field in used_fields if field not in pv1_fields}
+                if not has_fail and active_years >= 8:
+                    if corr_passed:
+                        state["status"] = "succeeded"
+                        state["success_id"] = alpha_id
+                        state['historical_alphas'] = historical_alphas
+                        state['repeat_historical_alphas'] = repeat_historical_alphas
+                        logger.info(f"SUCCESS! Alpha {alpha_id} passed all checks and correlations!")
+                        _log_iteration_summary(state)
+                        logger.info("--- Node 'batch_simulate_and_select_best' completed (success). ---")
+                        return state
+                    else:
+                        logger.info(f"Alpha {alpha_id} passed checks but failed correlations.")
 
-                if fields_to_remove:
-                    logger.info(f"Removing {len(fields_to_remove)} fields with insufficient history")
-                    state["valid_data_fields"].difference_update(fields_to_remove)
-                    state["all_fields_df"] = state["all_fields_df"][
-                        ~state["all_fields_df"]['id'].isin(fields_to_remove)]
+                # 数据不足：移除不良字段
+                if 0 < active_years < 8:
+                    logger.info(f"Alpha {alpha_id} has insufficient data ({active_years} years). Removing problematic fields...")
+                    settings = state["row_setting"]
+                    region = settings.get("region")
+                    universe = settings.get("universe")
+                    delay = settings.get("delay", 1)
+
+                    grouping_fields_df = get_datafields_with_cache(session, region=region, universe=universe,
+                                                                    delay=delay, data_type='GROUP', dataset_id='pv1')
+                    price_fields_df = get_datafields_with_cache(session, region=region, universe=universe,
+                                                                 delay=delay, data_type='MATRIX', dataset_id='pv1')
+
+                    pv1_fields = set()
+                    if grouping_fields_df is not None:
+                        pv1_fields.update(grouping_fields_df['id'].tolist())
+                    if price_fields_df is not None:
+                        pv1_fields.update(price_fields_df['id'].tolist())
+
+                    used_fields = utils.extract_datafields(expression, session)
+                    fields_to_remove = {field for field in used_fields if field not in pv1_fields}
+
+                    if fields_to_remove:
+                        logger.info(f"Removing {len(fields_to_remove)} fields with insufficient history")
+                        state["valid_data_fields"].difference_update(fields_to_remove)
+                        state["all_fields_df"] = state["all_fields_df"][
+                            ~state["all_fields_df"]['id'].isin(fields_to_remove)]
+
+        except Exception as e:
+            logger.error(f"Error processing simulated alpha {alpha_id}: {e}")
+            continue
 
     state['historical_alphas'] = historical_alphas
     state['repeat_historical_alphas'] = repeat_historical_alphas
@@ -1275,10 +1310,11 @@ def build_graph():
     """构建 LangGraph 状态图"""
     workflow = StateGraph(WorkflowState)
 
-    workflow.add_node("fetch_seed_details", fetch_seed_details)
-    workflow.add_node("propose_and_generate_batch", propose_and_generate_batch)
-    workflow.add_node("batch_validate_and_process", batch_validate_and_process)
-    workflow.add_node("batch_simulate_and_select_best", batch_simulate_and_select_best)
+    # Wrap each node with _safe_node to prevent uncaught exceptions from crashing the workflow
+    workflow.add_node("fetch_seed_details", _safe_node(fetch_seed_details))
+    workflow.add_node("propose_and_generate_batch", _safe_node(propose_and_generate_batch))
+    workflow.add_node("batch_validate_and_process", _safe_node(batch_validate_and_process))
+    workflow.add_node("batch_simulate_and_select_best", _safe_node(batch_simulate_and_select_best))
 
     workflow.set_entry_point("fetch_seed_details")
 
@@ -1365,7 +1401,7 @@ def run_optimization_workflow(seed_alpha_id: str, status_callback: Optional[Call
                 final_state = value
         logger.info("Workflow finished successfully.")
     except Exception as e:
-        logger.error(f"Workflow execution crashed: {e}")
+        logger.error(f"Workflow execution crashed (uncaught at graph level): {e}", exc_info=True)
         if final_state:
             final_state.setdefault('error_log', []).append(f"Workflow crashed: {e}")
         else:

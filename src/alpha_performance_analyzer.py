@@ -234,8 +234,8 @@ def main():
     
 
     # --- New analysis for specified period ---
-    period_start_date_str = "2025-12-01"
-    period_end_date_str = "2026-02-28"
+    period_start_date_str = "2026-03-01"
+    period_end_date_str = "2026-05-31"
     print(f"\n--- Analysis for specified period ({period_start_date_str} to {period_end_date_str}) ---")
 
     period_start_dt = pd.to_datetime(period_start_date_str).tz_localize('UTC')
