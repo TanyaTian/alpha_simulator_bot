@@ -210,9 +210,9 @@ class AlphaSimulator:
                     pass_check = True
                     fail_reason = ""
                     
-                    if sharpe <= 1.0:
+                    if sharpe <= 0.8:
                         pass_check = False
-                        fail_reason = f"Sharpe {sharpe:.2f} <= 1.0"
+                        fail_reason = f"Sharpe {sharpe:.2f} <= 0.8"
                     elif fitness <= 0.3:
                         pass_check = False
                         fail_reason = f"Fitness {fitness:.2f} <= 0.3"
@@ -232,7 +232,7 @@ class AlphaSimulator:
                         passed_alphas.append({'id': alpha_id, 'fitness': fitness})
                     else:
                         self.logger.info(f"Alpha {alpha_id} filtered: {fail_reason}")
-                        if sharpe < -1.0 and fitness < -0.3 and expression:
+                        if sharpe < -0.8 and fitness < -0.3 and expression:
                             self.logger.info(f"💡 Alpha {alpha_id} triggers reversal (Sharpe: {sharpe:.2f}, Fitness: {fitness:.2f})")
                             reversal_proposals.append({
                                 'type': 'REGULAR',
