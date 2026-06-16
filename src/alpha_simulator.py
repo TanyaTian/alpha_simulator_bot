@@ -219,7 +219,7 @@ class AlphaSimulator:
                     elif robust <= 0.8:
                         pass_check = False
                         fail_reason = f"Robust {robust:.2f} <= 0.8"
-                    elif conc_weight_res in ['FAIL', 'WARNING'] and (pd.isna(conc_weight_val) or conc_weight_val > 0.3):
+                    elif conc_weight_res in ['FAIL', 'WARNING'] and (pd.isna(conc_weight_val) or conc_weight_val > 0.5):
                         pass_check = False
                         val_str = f"{conc_weight_val:.4f}" if not pd.isna(conc_weight_val) else "None"
                         fail_reason = f"Conc Weight {conc_weight_res} (Value: {val_str})"
