@@ -5,7 +5,7 @@ import utils
 import ace_lib
 
 # --- 硬过滤常量 ---
-MIN_ACTIVE_YEARS = 8             # 最少活跃年数
+MIN_ACTIVE_YEARS = 6             # 最少活跃年数
 STRICT_SHARPE_THRESHOLD = 1.3    # 夏普率硬门槛 (必须为正)
 STRICT_FITNESS_THRESHOLD = 0.8   # Fitness 硬门槛 (必须为正)
 MIN_YEARLY_SHARPE = -5.0         # 单年夏普最低允许值

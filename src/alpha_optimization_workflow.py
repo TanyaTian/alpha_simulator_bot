@@ -1191,7 +1191,7 @@ def batch_simulate_and_select_best(state: WorkflowState) -> WorkflowState:
             if stats_df is not None:
                 active_years = (stats_df['sharpe'] != 0.0).sum()
 
-                if not has_fail and active_years >= 8:
+                if not has_fail and active_years >= 6:
                     if corr_passed:
                         state["status"] = "succeeded"
                         state["success_id"] = alpha_id
@@ -1205,7 +1205,7 @@ def batch_simulate_and_select_best(state: WorkflowState) -> WorkflowState:
                         logger.info(f"Alpha {alpha_id} passed checks but failed correlations.")
 
                 # 数据不足：移除不良字段
-                if 0 < active_years < 8:
+                if 0 < active_years < 6:
                     logger.info(f"Alpha {alpha_id} has insufficient data ({active_years} years). Removing problematic fields...")
                     settings = state["row_setting"]
                     region = settings.get("region")

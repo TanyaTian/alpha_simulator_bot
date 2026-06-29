@@ -190,7 +190,7 @@ class AlphaSimulator:
                 if stats_df is not None and not stats_df.empty:
                     active_years = (stats_df['sharpe'] != 0.0).sum()
                 
-                if active_years < 8:
+                if active_years < 6:
                     continue
                 
                 if check_df is not None and not check_df.empty:
