@@ -1153,7 +1153,8 @@ def batch_simulate_and_select_best(state: WorkflowState) -> WorkflowState:
                         'LOW_ROBUST_UNIVERSE_SHARPE', 'LOW_2Y_SHARPE',
                         'LOW_ASI_JPN_SHARPE', 'LOW_INVESTABILITY_CONSTRAINED_SHARPE',
                         'LOW_ROBUST_UNIVERSE_SHARPE.WITH_RATIO', 'LOW_ROBUST_UNIVERSE_RETURNS',
-                        'IS_LADDER_SHARPE', 'SELF_CORRELATION', 'PROD_CORRELATION'
+                        'IS_LADDER_SHARPE', 'SELF_CORRELATION', 'PROD_CORRELATION',
+                        'LOW_GLB_EMEA_SHARPE', 'LOW_GLB_AMER_SHARPE', 'LOW_GLB_APAC_SHARPE'
                     ]
                     for metric in metrics_to_include:
                         value = check_dict.get(metric)
