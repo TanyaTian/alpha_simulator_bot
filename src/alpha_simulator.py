@@ -229,11 +229,11 @@ class AlphaSimulator:
                     elif jpn_robust <= 0.8:
                         pass_check = False
                         fail_reason = f"JPN Robust {jpn_robust:.2f} <= 0.8"
-                    elif (glb_emea_sharpe is not None and glb_emea_sharpe <= 0.7 or
-                          glb_amer_sharpe is not None and glb_amer_sharpe <= 0.7 or
-                          glb_apac_sharpe is not None and glb_apac_sharpe <= 0.7):
+                    elif (glb_emea_sharpe is not None and glb_emea_sharpe <= 0.6 or
+                          glb_amer_sharpe is not None and glb_amer_sharpe <= 0.6 or
+                          glb_apac_sharpe is not None and glb_apac_sharpe <= 0.6):
                         pass_check = False
-                        fail_reason = f"GLB Region Sharpe: EMEA={glb_emea_sharpe}, AMER={glb_amer_sharpe}, APAC={glb_apac_sharpe} (need all > 0.7)"
+                        fail_reason = f"GLB Region Sharpe: EMEA={glb_emea_sharpe}, AMER={glb_amer_sharpe}, APAC={glb_apac_sharpe} (need all > 0.6)"
 
                     if pass_check:
                         self.logger.info(f"✅ Alpha {alpha_id} passed filtering (Fitness: {fitness:.2f})")
