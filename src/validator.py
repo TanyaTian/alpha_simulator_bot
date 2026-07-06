@@ -263,7 +263,7 @@ supported_functions = {
     's_log_1p': {'min_args': 1, 'max_args': 1, 'arg_types': ['expression']},
     'reverse': {'min_args': 1, 'max_args': 1, 'arg_types': ['expression']},  # -x
     'power': {'min_args': 2, 'max_args': 2, 'arg_types': ['expression', 'expression']},  # power(x, y)
-    'densify': {'min_args': 1, 'max_args': 1, 'arg_types': ['expression']},
+    'densify': {'min_args': 1, 'max_args': 1, 'arg_types': ['category']},
     'floor': {'min_args': 1, 'max_args': 1, 'arg_types': ['expression']},
     # Appended missing operators
     'arc_cos': {'min_args': 1, 'max_args': 1, 'arg_types': ['expression'], 'param_names': ['x']},
@@ -703,9 +703,9 @@ class ExpressionValidator:
             return errors
         
         # 首先检查是否是group类型字段，如果是则只能用于Group类型函数
-        # 但是如果当前函数是group_xxx或在group函数的参数链中，则允许使用
+        # 但是如果当前函数是group_xxx、在group函数的参数链中、或函数参数本身声明为category类型，则允许使用
         if arg.node_type == 'category' and arg.value in group_fields:
-            if not (function_name.startswith('group_') or is_in_group_arg):
+            if not (function_name.startswith('group_') or is_in_group_arg or expected_type == 'category'):
                 errors.append(f"Group类型字段 '{arg.value}' 只能用于Group类型函数的参数中")
         
         # 然后验证参数类型是否符合预期
@@ -728,10 +728,10 @@ class ExpressionValidator:
                 errors.append(f"无效的字段名: {arg.value}")
         elif expected_type == 'category':
             if not function_name.startswith('group_'):
-                # 非group函数的category参数必须是category类型且在valid_categories中
-                if arg.node_type != 'category':
+                # 非group函数的category参数：允许原始category类型或派生类别（bucket、group_cartesian_product等）
+                if arg.node_type != 'category' and not self._is_derived_category(arg):
                     errors.append(f"参数 {arg_index+1} 应该是一个类别，但得到 {arg.node_type}")
-                elif arg.value not in valid_categories:
+                elif arg.node_type == 'category' and arg.value not in valid_categories:
                     errors.append(f"无效的类别: {arg.value}")
             # group函数的category参数可以是任何类型（field、category等），不进行类型校验
         
