@@ -285,7 +285,7 @@ supported_functions = {
     'vec_filter': {'min_args': 1, 'max_args': 2, 'arg_types': ['expression', 'expression'], 'param_names': ['vec', 'value']},
     'group_coalesce': {'min_args': 4, 'max_args': 4, 'arg_types': ['expression', 'expression', 'expression', 'expression'], 'param_names': ['original_group', 'group2', 'group3', '…']},
     'group_percentage': {'min_args': 2, 'max_args': 3, 'arg_types': ['expression', 'category', 'expression'], 'param_names': ['x', 'group', 'percentage']},
-    'group_vector_neut': {'min_args': 3, 'max_args': 3, 'arg_types': ['expression', 'expression', 'expression'], 'param_names': ['x', 'y', 'g']},
+    'group_vector_neut': {'min_args': 3, 'max_args': 3, 'arg_types': ['expression', 'expression', 'category'], 'param_names': ['x', 'y', 'g']},
     'convert': {'min_args': 1, 'max_args': 2, 'arg_types': ['expression', 'expression'], 'param_names': ['x', 'mode']},
     'reduce_avg': {'min_args': 1, 'max_args': 2, 'arg_types': ['expression', 'expression'], 'param_names': ['input', 'threshold']},
     'reduce_choose': {'min_args': 2, 'max_args': 3, 'arg_types': ['expression', 'expression', 'expression'], 'param_names': ['input', 'nth', 'ignoreNan']},
