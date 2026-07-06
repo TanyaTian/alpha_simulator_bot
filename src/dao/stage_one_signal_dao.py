@@ -205,6 +205,41 @@ class StageOneSignalDAO:
             self.logger.error(f"Error deleting alpha by ID: {e}")
             return 0
 
+    def get_alphas_by_dataset_region(self, dataset_id, date_times, region):
+        """
+        Query alpha_ids by dataset_id, date_time(s), and region.
+        Used by AlphaSignalFactory to fetch base signals for hedging variant generation.
+
+        Args:
+            dataset_id: Dataset identifier (e.g., "analyst_estimates")
+            date_times: Date string (e.g., "20260512") or list of date strings
+            region: Market region (e.g., "USA", "GLB")
+
+        Returns:
+            List[Dict] with alpha_id field
+        """
+        # Normalize to list
+        if isinstance(date_times, str):
+            date_times = [date_times]
+
+        self.logger.debug(f"Querying alphas by dataset_region: dataset={dataset_id}, "
+                         f"dates={date_times}, region={region}")
+
+        placeholders = ', '.join(['%s'] * len(date_times))
+        sql = (
+            f"SELECT DISTINCT alpha_id FROM {self.TABLE_NAME} "
+            f"WHERE dataset_id = %s AND date_time IN ({placeholders}) AND region = %s"
+        )
+        params = (dataset_id, *date_times, region)
+
+        try:
+            result = self.db.query(sql, params)
+            self.logger.debug(f"Found {len(result)} alphas")
+            return result
+        except Exception as e:
+            self.logger.error(f"Error in get_alphas_by_dataset_region: {e}")
+            return []
+
     def close(self):
         """关闭数据库连接"""
         self.db.close()
