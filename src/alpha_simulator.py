@@ -201,6 +201,9 @@ class AlphaSimulator:
                     fitness = checks.get('LOW_FITNESS', 0)
                     robust = checks.get('LOW_ROBUST_UNIVERSE_SHARPE', 1.0)
                     jpn_robust = checks.get('LOW_ASI_JPN_SHARPE', 1.0)
+                    glb_emea_sharpe = checks.get('LOW_GLB_EMEA_SHARPE')
+                    glb_amer_sharpe = checks.get('LOW_GLB_AMER_SHARPE')
+                    glb_apac_sharpe = checks.get('LOW_GLB_APAC_SHARPE')
                     conc_weight_res = checks_result.get('CONCENTRATED_WEIGHT', 'PASS')
                     conc_weight_val = checks.get('CONCENTRATED_WEIGHT')
                     
@@ -226,6 +229,11 @@ class AlphaSimulator:
                     elif jpn_robust <= 0.8:
                         pass_check = False
                         fail_reason = f"JPN Robust {jpn_robust:.2f} <= 0.8"
+                    elif (glb_emea_sharpe is not None and glb_emea_sharpe <= 0.7 or
+                          glb_amer_sharpe is not None and glb_amer_sharpe <= 0.7 or
+                          glb_apac_sharpe is not None and glb_apac_sharpe <= 0.7):
+                        pass_check = False
+                        fail_reason = f"GLB Region Sharpe: EMEA={glb_emea_sharpe}, AMER={glb_amer_sharpe}, APAC={glb_apac_sharpe} (need all > 0.7)"
 
                     if pass_check:
                         self.logger.info(f"✅ Alpha {alpha_id} passed filtering (Fitness: {fitness:.2f})")

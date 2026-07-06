@@ -1,580 +1,460 @@
+"""
+AlphaSignalFactory — Barra-Style Noise-Hedging Variant Generator
+
+Reframes signal "optimization" as cross-sectional risk attribution:
+remove noise from known risk factors (size, sector, industry, volatility,
+liquidity) via group operations and vector neutralization, revealing the
+underlying economic signal.
+
+Architecture:
+  AlphaSignalFactory
+  ├── process_signals()             Entry: query → fetch → generate → insert
+  ├── _fetch_base_signals()         Query stage_one_base_signals
+  ├── _read_alpha_details()         Fetch expression + settings from BRAIN
+  ├── _generate_hedged_variants()   Core: CS-hedged expression variants
+  └── prepare_simulation_data()     Format for pending-simulation table
+"""
+
 from dao.stage_one_signal_dao import StageOneSignalDAO
 from dao.alpha_list_pending_simulated_dao import AlphaListPendingSimulatedDAO
 from ace_lib import start_session, check_session_and_relogin, get_simulation_result_json
 from datetime import datetime
 from logger import Logger
 import random
-import ast
+
 
 class AlphaSignalFactory:
+    """Generate noise-hedged alpha expression variants for simulation."""
+
+    # ── Region Configuration ───────────────────────────────────────────
+
+    # Universal simple group names (applicable to both USA and GLB)
+    UNIVERSAL_GROUPS = [
+        'market', 'sector', 'industry', 'subindustry', 'exchange'
+    ]
+
+    # USA-specific group fields (from USA.md)
+    USA_GROUPS = [
+        'pv13_h_min2_3000_sector',
+        'pv13_r2_min20_3000_sector',
+        'pv13_r2_min2_3000_sector',
+        'pv13_h_min2_focused_pureplay_3000_sector',
+        'sta1_top3000c50',
+        'sta1_allc20',
+        'sta1_allc10',
+        'sta1_top3000c20',
+        'sta1_allc5',
+        'sta2_top3000_fact3_c50',
+        'sta2_top3000_fact4_c20',
+        'sta2_top3000_fact4_c10',
+        'mdl10_group_name',
+    ]
+
+    # GLB-specific group fields (from GLB.md)
+    GLB_GROUPS = [
+        'sta1_allc20',
+        'sta1_allc10',
+        'sta1_allc50',
+        'sta1_allc5',
+        'pv13_2_sector',
+        'pv13_10_sector',
+        'pv13_3l_scibr',
+        'pv13_2l_scibr',
+        'pv13_1l_scibr',
+        'pv13_52_minvol_1m_all_delay_1_sector',
+        'pv13_52_minvol_1m_sector',
+        'sta3_pvgroup2_sector',
+        'sta3_pvgroup3_sector',
+    ]
+
+    # GLB-specific cartesian product groups (country cross-sections)
+    GLB_CARTESIAN_GROUPS = [
+        'group_cartesian_product(country, market)',
+        'group_cartesian_product(country, industry)',
+        'group_cartesian_product(country, subindustry)',
+        'group_cartesian_product(country, exchange)',
+        'group_cartesian_product(country, sector)',
+    ]
+
+    # Custom bucket definitions (both regions)
+    CUSTOM_BUCKETS = [
+        "bucket(rank(cap), range='0.1, 1, 0.1')",
+        "bucket(rank(aggregate_share_count_all_owners), range='0.1, 1, 0.1')",
+        "bucket(rank(ts_std_dev(returns, 20)), range='0.1, 1, 0.1')",
+        "bucket(rank(close*volume), range='0.1, 1, 0.1')",
+        "bucket(group_rank(cap, sector), range='0.1, 1, 0.1')",
+    ]
+
+    # Vector neutralization targets (risk factors to orthogonalize against)
+    VECTORS = ['cap', 'aggregate_share_count_all_owners', 'mdl77_nlvolcap']
+
+    # Time-series vector neutralization window lengths (calendar days)
+    TS_VECTOR_NEUT_WINDOWS = [252, 63, 21]
+
+    # ── Lifecycle ──────────────────────────────────────────────────────
+
     def __init__(self):
         self.logger = Logger()
         self.stage_one_dao = StageOneSignalDAO()
         self.pending_dao = AlphaListPendingSimulatedDAO()
         self.session = start_session()
-        self.group_ops = ['group_rank', 'group_zscore', 'group_neutralize']
-        self.ts_ops = ["ts_rank", "ts_zscore",  "ts_ir", "ts_delta",
-            "ts_arg_min", "ts_arg_max", "ts_scale", "ts_quantile",
-            "ts_kurtosis", "ts_product", "ts_returns"]
-        
-    def process_signals(self, date_time, priority=5, mode='normal', operator_type='all', margin_limit=0.0, sharpe_limit=0.0, fitness_limit=0.0):
+
+    # ── Region Helpers ─────────────────────────────────────────────────
+
+    def _get_groups_for_region(self, region):
+        """Return the full list of group expressions for *region*."""
+        groups = list(self.UNIVERSAL_GROUPS)
+        if region == 'USA':
+            groups += self.USA_GROUPS
+        elif region == 'GLB':
+            groups += self.GLB_GROUPS + self.GLB_CARTESIAN_GROUPS
+        groups += self.CUSTOM_BUCKETS
+        return groups
+
+    # ── Expression Helpers ─────────────────────────────────────────────
+
+    @staticmethod
+    def _split_multiline(expression):
+        """Return ``(body_lines, result_expr)``; body_lines is None for single-line."""
+        stripped = expression.strip()
+        if '\n' not in stripped:
+            return None, stripped
+        lines = stripped.split('\n')
+        body = '\n'.join(lines[:-1])
+        result = lines[-1].strip()
+        return body, result
+
+    @staticmethod
+    def _wrap_expression(body, result_expr, wrapper_template):
+        """Apply *wrapper_template.format(result_expr)*, preserving multi-line body."""
+        wrapped = wrapper_template.format(result_expr)
+        if body:
+            return f"{body}\n            {wrapped}"
+        return wrapped
+
+    # ── Public ─────────────────────────────────────────────────────────
+
+    def process_signals(
+        self,
+        dataset_id,
+        date_time,
+        region,
+        priority=5,
+        mode='normal',
+        margin_limit=0.0,
+        sharpe_limit=0.0,
+        fitness_limit=0.0,
+    ):
         """
-        处理信号，优化并存储为待模拟的alpha
-        
+        Main entry point: fetch, hedge, insert.
+
         Args:
-            date_time: 日期时间
-            priority: 任务优先级，默认为5
-            mode: 处理模式，'test'为测试模式，'normal'为正常模式
-            operator_type: 算子类型，'ts'为时间序列，'group'为分组，'all'为两者都添加
-            margin_limit: margin限制，过滤掉In-Sample margin小于该值的alpha
-            sharpe_limit: sharpe限制，过滤掉In-Sample sharpe小于该值的alpha
-            fitness_limit: fitness限制，过滤掉In-Sample fitness小于该值的alpha
+            dataset_id:    Dataset identifier (e.g., "analyst_estimates")
+            date_time:     Date string (e.g., "20260512") or list of date strings
+                           (e.g., ["20260510", "20260511", "20260512"]). A list
+                           queries alphas across multiple timestamps, which is
+                           typical when a dataset's data spans several dates.
+            region:        "USA" or "GLB"
+            priority:      Simulation queue priority (default 5)
+            mode:          'test' (process ~10 alphas) or 'normal' (all)
+            margin_limit:  IS margin threshold
+            sharpe_limit:  IS sharpe threshold
+            fitness_limit: IS fitness threshold
         """
         self.session = check_session_and_relogin(self.session)
-        signal_optimize_set = {}
-        settings_dict = {}
-        
-        # 从 StageOneSignalDAO 获取原始 alpha 信号
-        raw_signals_db = self.stage_one_dao.get_all_by_date_time(date_time)
-        
-        if not raw_signals_db:
-            self.logger.info(f"No signals found for date_time: {date_time}")
-            return
 
-        self.logger.info(f"Found {len(raw_signals_db)} signals in database for {date_time}")
-        
-        # 获取详细信息并按 region 分组
-        region_signals = {}
-        
-        for sig in raw_signals_db:
-            alpha_id = sig['alpha_id']
-            details = get_simulation_result_json(self.session, alpha_id)
+        # 1. Fetch base alpha IDs from database
+        alpha_ids = self._fetch_base_signals(dataset_id, date_time, region)
+        if not alpha_ids:
+            self.logger.info(
+                f"No signals: dataset={dataset_id} dates={date_time} region={region}"
+            )
+            return None
+
+        self.logger.info(
+            f"Found {len(alpha_ids)} base signals for {region}/{dataset_id}"
+        )
+
+        # 2. Sample if in test mode
+        if mode == 'test':
+            alpha_ids = random.sample(alpha_ids, min(10, len(alpha_ids)))
+            self.logger.info(f"Test mode: sampled {len(alpha_ids)} alphas")
+
+        # 3. Read details, filter, generate hedged variants
+        settings_dict = {}
+        all_records = []  # (alpha_id, expression, decay, region)
+        skipped = 0
+
+        for alpha_id in alpha_ids:
+            details = self._read_alpha_details(alpha_id)
             if not details:
-                self.logger.warning(f"Failed to get details for alpha {alpha_id}")
+                skipped += 1
                 continue
-            
-            # 提取代码
-            regular_data = details.get('regular', {})
-            code = regular_data.get('code')
-            if not code:
+
+            expression = details.get('expression')
+            if not expression:
+                skipped += 1
                 continue
-            
-            # 统计数据过滤
-            is_stats = details.get('is', {})
+
+            # Performance filtering
+            is_stats = details.get('is_stats', {})
             margin = is_stats.get('margin', 0)
             sharpe = is_stats.get('sharpe', 0)
             fitness = is_stats.get('fitness', 0)
 
-            if margin < margin_limit:
-                self.logger.info(f"Alpha {alpha_id} filtered: margin {margin} < {margin_limit}")
-                continue
-            
-            if sharpe < sharpe_limit:
-                self.logger.info(f"Alpha {alpha_id} filtered: sharpe {sharpe} < {sharpe_limit}")
+            if margin < margin_limit or sharpe < sharpe_limit or fitness < fitness_limit:
+                self.logger.debug(
+                    f"Filtered {alpha_id}: margin={margin:.4f} "
+                    f"sharpe={sharpe:.2f} fitness={fitness:.2f}"
+                )
+                skipped += 1
                 continue
 
-            if fitness < fitness_limit:
-                self.logger.info(f"Alpha {alpha_id} filtered: fitness {fitness} < {fitness_limit}")
-                continue
-            
             settings = details.get('settings', {})
-            region = settings.get('region', 'USA')
+            alpha_region = settings.get('region', region)
             decay = settings.get('decay', 0)
-            
-            if region not in region_signals:
-                region_signals[region] = []
-            
-            # 准备 _optimize_expressions 需要的格式 [alpha_id, code, decay]
-            region_signals[region].append((alpha_id, code, decay))
-            self.logger.info(f"Alpha {alpha_id} accepted for region {region} optimization")
-            
-            # 保存设置用于 prepare_simulation_data
             settings_dict[alpha_id] = settings
 
-        total_valid_signals = sum(len(sigs) for sigs in region_signals.values())
-        self.logger.info(f"Total valid signals for optimization after filtering: {total_valid_signals}")
+            # Generate hedged variants
+            variants = self._generate_hedged_variants(expression, region)
+            for v_expr in variants:
+                all_records.append((alpha_id, v_expr, decay, alpha_region))
 
-        if not region_signals:
-            self.logger.info("No valid signals after fetching details and filtering")
-            return
-
-        for region, alpha_signals in region_signals.items():
-            self.logger.info(f"Region {region}: Processing {len(alpha_signals)} alpha signals")
-                
-            # 按表达式是否包含换行符分组
-            multi_line_signals = [rec for rec in alpha_signals if '\n' in rec[1]]
-            single_line_signals = [rec for rec in alpha_signals if '\n' not in rec[1]]
-            
-            # 优化处理
-            optimized_multi = self._optimize_expressions(multi_line_signals, region, multi_line=True, operator_type=operator_type)
-            self.logger.info(f"Region {region}: Multi-line optimized signals: {len(optimized_multi)}")
-            
-            optimized_single = self._optimize_expressions(single_line_signals, region, multi_line=False, operator_type=operator_type)
-            self.logger.info(f"Region {region}: Single-line optimized signals: {len(optimized_single)}")
-            
-            # 合并优化结果
-            signal_optimize_set[region] = optimized_multi + optimized_single
-            self.logger.info(f"Region {region}: Total optimized signals: {len(signal_optimize_set[region])} (from {len(alpha_signals)} originals)")
-            
-        # 根据模式进行采样（在优化后的表达式上采样）
-        sampled_optimize_set = {}
-        for region, signals in signal_optimize_set.items():
-            if not signals:
-                continue
-                
-            if mode == 'test':
-                # 测试模式：从优化后的表达式中随机取10个
-                sampled_signals = random.sample(signals, min(10, len(signals)))
-                sampled_optimize_set[region] = sampled_signals
-            elif mode == 'normal':
-                # 正常模式：如果优化后的表达式超过30000个，则随机取30%
-                if len(signals) > 30000:
-                    sampled_signals = random.sample(signals, int(len(signals)*0.3))
-                    sampled_optimize_set[region] = sampled_signals
-                else:
-                    sampled_optimize_set[region] = signals
-            else:
-                # 默认模式：保留所有优化后的表达式
-                sampled_optimize_set[region] = signals
-        
-        # 准备模拟数据（按region分组）
-        simulation_records_by_region = self.prepare_simulation_data(
-            sampled_optimize_set, 
-            settings_dict,
-            priority=priority
+        accepted = len(alpha_ids) - skipped
+        self.logger.info(
+            f"Generated {len(all_records)} variants from {accepted} alphas "
+            f"(skipped {skipped})"
         )
-        
-        # 合并所有记录用于插入
-        all_records = []
-        for region, region_records in simulation_records_by_region.items():
-            self.logger.info(f"Region {region}: Collected {len(region_records)} simulation records")
-            all_records.extend(region_records)
-        
-        # 将合并后的所有记录进行全局随机打乱，确保不同地区、不同类型的 alpha 混合在一起
-        if all_records:
-            self.logger.info(f"Performing global shuffle on {len(all_records)} total records...")
-            # 使用 random.sample 全量采样是生成全新打乱列表的最稳妥方式
-            all_records = random.sample(all_records, len(all_records))
-            # 再次使用 shuffle 确保极致打乱
-            random.shuffle(all_records)
-            
-            inserted_count = self.pending_dao.batch_insert(all_records)
-            self.logger.info(f"Successfully inserted {inserted_count} shuffled records into database")
-        else:
-            self.logger.info("No optimized signals to insert")
-            
-        return simulation_records_by_region
 
-    def _optimize_expressions(self, signals, region, multi_line=False, operator_type='all'):
+        if not all_records:
+            self.logger.info("No records to insert")
+            return None
+
+        # 4. Shuffle then batch insert
+        random.shuffle(all_records)
+        db_records = self.prepare_simulation_data(all_records, settings_dict, priority)
+        inserted = self.pending_dao.batch_insert(db_records)
+        self.logger.info(f"Inserted {inserted} records into pending-simulated table")
+        return db_records
+
+    # ── Internal: Data Fetching ────────────────────────────────────────
+
+    def _fetch_base_signals(self, dataset_id, date_times, region):
+        """Query ``stage_one_base_signals``, return list of alpha_id strings."""
+        rows = self.stage_one_dao.get_alphas_by_dataset_region(
+            dataset_id, date_times, region
+        )
+        if not rows:
+            return []
+        return [r['alpha_id'] for r in rows]
+
+    def _read_alpha_details(self, alpha_id):
         """
-        优化表达式集合
-        
-        Args:
-            signals: 信号列表 [alpha_id, exp, decay]
-            region: 地区代码
-            multi_line: 是否为多行表达式
-            operator_type: 算子类型
-            
+        Fetch expression and settings from the BRAIN platform.
+
         Returns:
-            优化后的信号列表
+            dict with keys ``expression``, ``settings``, ``is_stats``, or None.
         """
-        optimized_signals = []
-        for rec in signals:
-            alpha_id = rec[0]
-            exp = rec[1]
-            decay = rec[-1]  # 获取decay值
-            
-            # 时间序列优化
-            if operator_type in ['ts', 'all']:
-                new_exps = self.first_order_factory_with_day(
-                    [exp], 
-                    self.ts_ops, 
-                    days=[20, 63, 120, 252], 
-                    multi_line=multi_line
-                )
-                for new_exp in new_exps:
-                    # 创建新记录：更新表达式, 添加decay
-                    optimized_signals.append((alpha_id, new_exp , decay))
-            
-            # 分组优化
-            if operator_type in ['group', 'all']:
-                new_exps = self.get_group_second_order_factory(
-                    [exp], 
-                    self.group_ops, 
-                    region, 
-                    multi_line=multi_line
-                )
-                for new_exp in new_exps:
-                    optimized_signals.append((alpha_id, new_exp, decay))
-                    
-        return optimized_signals
+        details = get_simulation_result_json(self.session, alpha_id)
+        if not details:
+            self.logger.warning(f"No simulation result for alpha {alpha_id}")
+            return None
 
-    def _count_operations(self, expression, operations):
-        """
-        计算表达式中指定操作符的出现次数
-        
-        Args:
-            expression: 要分析的表达式
-            operations: 操作符列表
-            
-        Returns:
-            操作符出现次数
-        """
-        count = 0
-        for op in operations:
-            # 统计每个运算符出现的实际次数，避免部分匹配
-            count += expression.count(op + '(')  # 运算符后面通常跟着括号
-        return count
+        regular_data = details.get('regular', {})
+        expression = regular_data.get('code')
+        if not expression:
+            self.logger.debug(f"Alpha {alpha_id}: no expression code")
+            return None
 
-    def prepare_simulation_data(self, signal_optimize_set, settings_dict, priority):
-        """
-        根据优化信号和设置字典准备模拟数据
-        
-        Args:
-            signal_optimize_set: 按地区组织的优化信号字典 {region: [optimized_signals]}
-            settings_dict: 信号设置字典 {signal_id: settings}
-            priority: 任务优先级
-            
-        Returns:
-            按地区组织的数据库记录字典 {region: [db_records]}
-        """
-
-        db_records_by_region = {}
-        
-        for region, signals in signal_optimize_set.items():
-            region_records = []
-            for signal in signals:
-                alpha_id, new_exp, decay = signal
-                
-                # 获取该信号的设置
-                signal_settings = settings_dict.get(alpha_id, {})
-                
-                # 创建数据库记录元组
-                simulation_data = {
-                    'type': 'REGULAR',
-                    'settings': {
-                        'instrumentType': 'EQUITY',
-                        'region': region,
-                        'universe': signal_settings.get('universe', 'TOP3000'),
-                        'delay': signal_settings.get('delay', 1),  # 使用提取的delay值
-                        'decay': decay,
-                        'neutralization': signal_settings.get('neutralization', 'NONE'),
-                        'truncation': signal_settings.get('truncation', 0.01),
-                        'pasteurization': 'ON',
-                        'testPeriod': 'P0Y',
-                        'unitHandling': 'VERIFY',
-                        'nanHandling': 'OFF',
-                        'language': 'FASTEXPR',
-                        'visualization': signal_settings.get('visualization', False),
-                        'maxTrade': signal_settings.get('maxTrade', 'OFF')
-                    },
-                    'regular': new_exp
-                }
-                
-                # 创建数据库记录
-                region_records.append({
-                    'type': simulation_data['type'],
-                    'settings': str(simulation_data['settings']),
-                    'regular': simulation_data['regular'],
-                    'priority': priority,
-                    'region': region,
-                    'created_at': datetime.now()
-                })
-            
-            # 按region保存记录
-            db_records_by_region[region] = region_records
-        
-        return db_records_by_region
-
-    
-    def get_group_second_order_factory(self, first_order, group_ops, region, multi_line=False):
-        """
-        生成二级信号工厂，支持单行和多行模式
-        
-        Args:
-            first_order: 一级信号列表
-            group_ops: 分组操作符列表
-            region: 地区代码
-            multi_line: 是否为多行表达式模式
-            
-        Returns:
-            生成的二级信号列表
-        """
-        second_order = []
-        for fo in first_order:
-            for group_op in group_ops:
-                second_order += self.group_factory(group_op, fo, region, multi_line)
-        return second_order
-
-    def group_factory(self, op, field, region, multi_line=False):
-        """
-        根据操作符、字段和地区生成alpha表达式列表，支持单行和多行模式
-        
-        Args:
-            op (str): 操作符，例如 'group_rank'
-            field (str): 字段或表达式
-            region (str): 地区代码
-            multi_line (bool): 是否为多行表达式模式
-            
-        Returns:
-            list: 包含生成的alpha表达式的列表
-        """
-        output = []
-        vectors = ["cap"]
-        
-        # 分组定义（统一管理避免重复）
-        region_groups = {
-            "CHN": ['pv13_h_min2_sector', 'pv13_di_6l', 'pv13_rcsed_6l', 'pv13_di_5l', 
-                   'pv13_di_4l', 'pv13_di_3l', 'pv13_di_2l', 'pv13_di_1', 'pv13_parent', 'pv13_level',
-                   'sta1_top3000c30', 'sta1_top3000c20', 'sta1_top3000c10', 'sta1_top3000c2', 'sta1_top3000c5',
-                   'sta2_top3000_fact4_c10', 'sta2_top2000_fact4_c50', 'sta2_top3000_fact3_c20'],
-                   
-            "HKG": ['pv13_10_f3_g2_minvol_1m_sector', 'pv13_10_minvol_1m_sector', 'pv13_20_minvol_1m_sector', 
-                   'pv13_2_minvol_1m_sector', 'pv13_1l_scibr', 'pv13_3l_scibr',
-                   'pv13_2l_scibr', 'pv13_4l_scibr', 'pv13_5l_scibr',
-                   'sta1_allc50', 'sta1_allc5', 'sta1_allxjp_513_c20', 'sta1_top2000xjp_513_c5',
-                   'sta2_all_xjp_513_all_fact4_c10', 'sta2_top2000_xjp_513_top2000_fact3_c10',
-                   'sta2_allfactor_xjp_513_13', 'sta2_top2000_xjp_513_top2000_fact3_c20'],
-                   
-            "TWN": ['pv13_2_minvol_1m_sector', 'pv13_20_minvol_1m_sector', 'pv13_10_minvol_1m_sector',
-                   'pv13_5_minvol_1m_sector', 'pv13_10_f3_g2_minvol_1m_sector', 'pv13_5_f3极2_minvol_1m_sector',
-                   'pv13_2_f4_g3_minvol_1m_sector',
-                   'sta1_allc50', 'sta1_allxjp_513_c50', 'sta1_allxjp_513_c20', 'sta1_allxjp_513_c2',
-                   'sta1_allc20', 'sta1_allxjp_513_c5', 'sta1_allxjp_513_c10', 'sta1_allc2', 'sta1_allc5',
-                   'sta2_allfactor_xjp_513_0', 'sta2_all_xjp_513_all_fact3_c20',
-                   'sta2_all_xjp_513_all_fact4_c20', 'sta2_all_xjp_513_all_fact4_c50'],
-                   
-            "USA": ['pv13_h_min2_3000_sector', 'pv13_r2_min20_3000_sector', 'pv13_r2_min2_3000_sector',
-                   'pv13_r2_min2_3000_sector', 'pv13_h_min2_focused_pureplay_3000_sector',
-                   'sta1_top3000c50', 'sta1_allc20', 'sta1_allc10', 'sta1_top3000c20', 'sta1_allc5',
-                   'sta2_top3000_fact3_c50', 'sta2_top3000_fact4_c20', 'sta2_top3000_fact4_c10',
-                   'mdl10_group_name'],
-                   
-            "ASI": ['pv13_20_minvol_1m_sector', 'pv13_5_f3_g2_minvol_1m_sector', 'pv13_10_f3_g2_minvol_1m_sector',
-                   'pv13_2_f4_g3_minvol_1m_sector', 'pv13_10_minvol_1m_sector', 'pv13_5_minvol_1m_sector',
-                   'sta1_allc50', 'sta1_allc10', 'sta1_minvol1mc50', 'sta1_minvol1mc20',
-                   'sta1_minvol1m_normc20', 'sta1_minvol1m_normc50'],
-                   
-            "JPN": ['sta1_alljpn_513_c5', 'sta1_alljpn_513_c50', 'sta1_alljpn_513_c2', 'sta1_alljpn_513_c20',
-                   'sta2_top2000_jpn_513_top2000_fact3_c20', 'sta2_all_jpn_513_all_fact1_c5',
-                   'sta2_allfactor_jpn_513_9', 'sta2_all_jpn_513_all_fact1_c10',
-                   'pv13_2_minvol_1m_sector', 'pv13_2_f4_g3_minvol_1m_sector', 'pv13_10_minvol_1m_sector',
-                   'pv13_10_f3_g2_minvol_1m_sector', 'pv13_all_delay_1_parent', 'pv13_all_delay_1_level'],
-                   
-            "KOR": ['pv13_10_f3_g2_minvol_1m_sector', 'pv13_5_minvol_1m_sector', 'pv13_5_f3_g2_minvol_1m_sector',
-                   'pv13_2_minvol_1m_sector', 'pv13_20_minvol_1m_sector', 'pv13_2_f4_g3_minvol_1m_sector',
-                   'sta1_allc20', 'sta1_allc50', 'sta1_allc2', 'sta1_allc10', 'sta1_minvol1mc50',
-                   'sta1_allxjp_513_c10', 'sta1_top2000xjp_513_c50',
-                   'sta2_all_xjp_513_all_fact1_c50', 'sta2_top2000_xjp_513_top2000_fact2_c50',
-                   'sta2_all_xjp_513_all_fact4_c50', 'sta2_all_xjp_513_all_fact4_c5'],
-                   
-            "EUR": ['pv13_5_sector', 'pv13_2_sector', 'pv13_v3_3l_scibr', 'pv13_v3_2l_scibr', 'pv13_2l_scibr',
-                   'pv13_52_sector', 'pv13_v3_6l_scibr', 'pv13_v3_4l_scibr', 'pv13_v3_1l_scibr',
-                   'sta1_allc10', 'sta1_allc2', 'sta1_top1200c2', 'sta1_allc20', 'sta1_top1200c10',
-                   'sta2_top1200_fact3_c50', 'sta2_top1200_fact3_c20', 'sta2_top1200_fact4_c50'],
-                   
-            "GLB": ['sta1_allc20', 'sta1_allc10', 'sta1_allc50', 'sta1_allc5',
-                   'sta3_pvgroup2_sector', 'sta3_pvgroup3_sector',
-                   'pv13_2_sector', 'pv13_10_sector', 'pv13_3l_scibr', 'pv13_2l_scibr', 'pv13_1l_scibr',
-                   'pv13_52_minvol_1m_all_delay_1_sector', 'pv13_52_minvol_1m_sector'],
-                   
-            "AMR": ['pv13_4l_scibr', 'pv13_1l_scibr', 'pv13_hierarchy_min51_f1_sector',
-                   'pv13_hierarchy_min2_600_sector', 'pv13_r2_min2_sector', 'pv13_h_min20_600_sector']
+        return {
+            'expression': expression,
+            'settings': details.get('settings', {}),
+            'is_stats': details.get('is', {}),
         }
-        
-        # 基础分组定义
-        cap_group = "bucket(rank(cap), range='0.1, 1, 0.1')"
-        asset_group = "bucket(rank(assets),range='0.1, 1, 0.1')"
-        sector_cap_group = "bucket(group_rank(cap, sector),range='0.1, 1, 0.1')"
-        sector_asset_group = "bucket(group_rank(assets, sector),range='0.1, 1, 0.1')"
-        vol_group = "bucket(rank(ts_std_dev(returns,20)),range = '0.1, 1, 0.1')"
-        liquidity_group = "bucket(rank(close*volume),range = '0.1, 1, 0.1')"
-        country_group = ["country"]
-        # 新增 ASI 验证有效的分组
-        nlvolcap_group = "bucket(rank(mdl177_nlvolcap), range='0.1, 1, 0.1')"
-        mktcappera_group = "bucket(rank(mdl77_mktcappera), range='0.1, 1, 0.1')"
-        share_count_group = "bucket(rank(aggregate_share_count_all_owners), range='0.1, 1, 0.1')"
 
+    # ── Internal: Hedging Variant Generation ──────────────────────────
+
+    def _generate_hedged_variants(self, expression, region):
         """
-        # 组合分组定义
-        combo_group = ["group_cartesian_product(country, market)", 
-                     "group_cartesian_product(country, industry)", 
-                     "group_cartesian_product(country, subindustry)", 
-                     "group_cartesian_product(country, exchange)",
-                     "group_cartesian_product(country, sector)"]
-        
+        Core: generate CS-hedged expression variants.
 
-        
-        # 根据地区创建不同的分组
-        if region == "GLB" or region == "USA" or region == "EUR":
-            # GLB地区没有assets字段，移除相关分组
-            # USA/EUR使用asset太多，这季度不能使用了
-            groups = ["market", "sector", "industry", "subindustry",
-                     cap_group, sector_cap_group, vol_group, liquidity_group]
-        else:
-            groups = ["market", "sector", "industry", "subindustry",
-                     cap_group, asset_group, sector_cap_group, sector_asset_group, 
-                     vol_group, liquidity_group]
-        
-        # 添加地区特定分组
-        if region in region_groups:
-            groups += region_groups[region]
-        
-        # 为ASI、EUR、GLB地区添加combo_group和country_group
-        if region in ["ASI", "EUR", "GLB"]:
-            groups += combo_group + country_group
+        Five layers of hedging:
+
+        Layer 1 — Single Group Op
+            group_neutralize / group_zscore / group_rank / group_scale
+            against each known group.
+            Purpose: remove sector/industry/country bias, normalize within groups.
+            group_scale (min-max → [0,1]) prevents sectors with inherently larger
+            signal amplitudes from dominating the portfolio.
+
+        Layer 2 — Cross-Sectional Normalization & Vector Neutralization
+            normalize: market-mean removal (built-in cs demeaning).
+            vector_neut: orthogonalize against size, ownership, vol factors.
+            winsorize: clamp extreme outliers to ±Nσ, preventing concentration risk
+            from a single extreme signal value.
+
+        Layer 3 — Combined (vector + group, 2 CS layers)
+            Size-hedged then group-neutralized/zscored via sequential nesting.
+
+        Layer 4 — Integrated group_vector_neut (platform-native, 1 CS layer)
+            group_vector_neut(x, y, g): orthogonolize x against y within each
+            group g. Same risk-attribution effect as Layer 3 but as a single
+            operator call.
+
+        Layer 5 — Time-Series Vector Neutralization
+            ts_vector_neut(x, y, d): remove the time-series projection of the
+            signal onto a risk factor. Complements CS hedging by stripping
+            temporal factor exposures (e.g., if your signal co-moves with
+            market cap over time).
+
+        Returns:
+            List of expression strings.
         """
-        # 定义各地区的group集合
-        usa_atom_group = ["market", "sector", "industry", "subindustry", "exchange"]
-        
-        asi_atom_group = ["market", "sector", "industry", "subindustry", "exchange", "country",
-                        nlvolcap_group, mktcappera_group, share_count_group,
-                        cap_group, sector_cap_group]
-        
-        eur_atom_group = ["market", "sector", "industry", "subindustry", "exchange", "country",
-                        "group_cartesian_product(country, market)", 
-                        "group_cartesian_product(country, industry)", 
-                        "group_cartesian_product(country, subindustry)", 
-                        "group_cartesian_product(country, exchange)",
-                        "group_cartesian_product(country, sector)",
-                        cap_group, sector_cap_group]
-        
-        glb_atom_group = eur_atom_group.copy()
-        
-        chn_atom_group = ["market", "sector", "industry", "subindustry", "exchange"]
-        ind_atom_group = ["market", "sector", "industry", "subindustry", "exchange"]
-        hkg_atom_group = ["market", "sector", "industry", "subindustry", "exchange"]
-        
-        # 根据region选择对应的group集合（直接匹配大写）
-        if region == 'USA':
-            groups = usa_atom_group
-        elif region == 'ASI':
-            groups = asi_atom_group
-        elif region == 'EUR':
-            groups = eur_atom_group
-        elif region == 'GLB':
-            groups = glb_atom_group
-        elif region == 'CHN':
-            groups = chn_atom_group
-        elif region == 'IND':
-            groups = ind_atom_group
-        elif region == 'HKG':
-            groups = hkg_atom_group
-        else:
-            raise ValueError(f"无效的region: {region}，必须是'USA', 'ASI', 'EUR', 'GLB'或'CHN'（大写）, 'IND'")
-        
-        # 多行处理模式
-        if multi_line:
-            field_lines = field.strip().split('\n')
-            field_result = field_lines[-1].strip()
-            field_body = '\n'.join(field_lines[:-1])
-        else:
-            field_result = field
+        variants = []
+        groups = self._get_groups_for_region(region)
+        body, result_expr = self._split_multiline(expression)
 
-        # 生成表达式
+        def w(template):
+            """Shorthand: wrap *result_expr* with *template*."""
+            return self._wrap_expression(body, result_expr, template)
+
+        # ── Layer 1: Single Group Operations ──
         for group in groups:
-            if op.startswith("group_vector"):
-                for vector in vectors:
-                    if multi_line:
-                        alpha_op = f"{op}({field_result},{vector},densify({group}))"
-                        alpha = f"{field_body}\n            {alpha_op}"
-                    else:
-                        alpha = f"{op}({field_result},{vector},densify({group}))"
-                    output.append(alpha)
-            elif op.startswith("group_percentage"):
-                if multi_line:
-                    alpha_op = f"{op}({field_result},densify({group}),percentage=0.5)"
-                    alpha = f"{field_body}\n            {alpha_op}"
-                else:
-                    alpha = f"{op}({field_result},densify({group}),percentage=0.5)"
-                output.append(alpha)
-            else:
-                if multi_line:
-                    alpha_op = f"{op}({field_result},densify({group}))"
-                    alpha = f"{field_body}\n            {alpha_op}"
-                else:
-                    alpha = f"{op}({field_result},densify({group}))"
-                output.append(alpha)
-            
-        return output
+            variants.append(w(f"group_neutralize({{}}, densify({group}))"))
+            variants.append(w(f"group_zscore({{}}, densify({group}))"))
+            variants.append(w(f"group_rank({{}}, densify({group}))"))
+            # Min-max normalize to [0,1] within each group — prevents
+            # sectors with larger signal amplitude from dominating
+            variants.append(w(f"group_scale({{}}, densify({group}))"))
 
-    def first_order_factory_with_day(self, fields, ops_set, days=None, multi_line=False):
+        # ── Layer 2: Cross-Sectional Normalization, Outlier Treatment & Vector Neutralization ──
+        # Market-mean removal (equivalent to group_neutralize against market)
+        variants.append(w("normalize({})"))
+        variants.append(w("normalize({}, useStd=true)"))
+
+        # Outlier treatment — clamp extreme signal values to prevent
+        # concentration risk from a single extreme observation
+        variants.append(w("winsorize({}, std=3)"))
+        variants.append(w("winsorize({}, std=4)"))
+
+        # Vector neutralization against risk factors
+        for vector in self.VECTORS:
+            variants.append(w(f"vector_neut({{}}, {vector})"))
+
+        # ── Layer 3: Combined — vector_neut then group_neutralize / group_zscore ──
+        for vector in self.VECTORS:
+            for group in groups:
+                # Size-hedged → sector-normalized
+                variants.append(w(
+                    f"group_neutralize(vector_neut({{}}, {vector}), densify({group}))"
+                ))
+                # Size-hedged → group-zscored
+                variants.append(w(
+                    f"group_zscore(vector_neut({{}}, {vector}), densify({group}))"
+                ))
+
+        # ── Layer 4: Integrated group_vector_neut (platform-native) ──
+        # Orthogonolize against risk factor within each group in one step.
+        # This is a native BRAIN operator that combines group + vector
+        # neutralization, discovered via platform operator audit.
+        for vector in self.VECTORS:
+            for group in groups:
+                variants.append(w(
+                    f"group_vector_neut({{}}, {vector}, densify({group}))"
+                ))
+
+        # ── Layer 5: Time-Series Vector Neutralization ──
+        # Remove temporal factor co-movement. If the signal's time-series
+        # is correlated with a risk factor (e.g., moves with cap over time),
+        # ts_vector_neut strips that time-series projection, complementing
+        # the cross-sectional hedging above.
+        for vector in self.VECTORS:
+            for d in self.TS_VECTOR_NEUT_WINDOWS:
+                variants.append(w(f"ts_vector_neut({{}}, {vector}, {d})"))
+
+        return variants
+
+    # ── Internal: Record Formatting ────────────────────────────────────
+
+    def prepare_simulation_data(self, alpha_records, settings_dict, priority):
         """
-        根据操作符、字段和天数生成带日期的一级alpha表达式，支持单行和多行模式
-        
+        Format records for ``alpha_list_pending_simulated_table``.
+
         Args:
-            fields (list): 字段列表
-            ops_set (list): 操作符列表
-            days (list): 天数列表
-            multi_line (bool): 是否为多行表达式模式
-            
-        Returns:
-            list: 包含生成的alpha表达式的列表
-        """
-        alpha_set = []
-        for field in fields:
-            for op in ops_set:
-                alpha_set += self.ts_factory_with_day(op, field, days, multi_line)
-        return alpha_set
+            alpha_records: List of ``(alpha_id, expression, decay, region)``
+            settings_dict: ``{alpha_id: settings_dict}``
+            priority:      Task priority
 
-    def ts_factory_with_day(self, op, field, days=None, multi_line=False):
-        """
-        生成带日期的时间序列alpha表达式，支持单行和多行模式
-        
-        Args:
-            op (str): 操作符
-            field (str): 字段或表达式
-            days (list): 天数列表
-            multi_line (bool): 是否为多行表达式模式
-            
         Returns:
-            list: 包含生成的alpha表达式的列表
+            List of dicts ready for batch insert.
         """
-        output = []
-        if days is None:
-            days = [5, 20, 63, 120, 252]
-        
-        # 多行处理模式
-        if multi_line:
-            field_lines = field.strip().split('\n')
-            field_result = field_lines[-1].strip()
-            field_body = '\n'.join(field_lines[:-1])
-        else:
-            field_result = field
+        records = []
+        for alpha_id, expression, decay, region in alpha_records:
+            signal_settings = settings_dict.get(alpha_id, {})
 
-        for day in days:
-            if multi_line:
-                alpha_op = f"{op}({field_result}, {day})"
-                alpha = f"{field_body}\n            {alpha_op}"
-            else:
-                alpha = f"{op}({field_result}, {day})"
-            output.append(alpha)
-        
-        return output
-        
+            sim_settings = {
+                'instrumentType': 'EQUITY',
+                'region': region,
+                'universe': signal_settings.get('universe', 'TOP3000'),
+                'delay': signal_settings.get('delay', 1),
+                'decay': decay,
+                'neutralization': signal_settings.get('neutralization', 'NONE'),
+                'truncation': signal_settings.get('truncation', 0.01),
+                'pasteurization': 'ON',
+                'testPeriod': 'P0Y',
+                'unitHandling': 'VERIFY',
+                'nanHandling': 'OFF',
+                'language': 'FASTEXPR',
+                'visualization': signal_settings.get('visualization', False),
+                'maxTrade': signal_settings.get('maxTrade', 'OFF'),
+            }
+
+            records.append({
+                'type': 'REGULAR',
+                'settings': str(sim_settings),
+                'regular': expression,
+                'priority': priority,
+                'region': region,
+                'created_at': datetime.now(),
+            })
+
+        return records
+
+
+# ── CLI Entry Point ────────────────────────────────────────────────────
 
 def main():
     """
-    主函数,用于从命令行调用生成优化alpha并插入数据库
-    """
-    dates = ['20260512']  # 示例日期列表
-    # 设置日志
-    logger = Logger()
-    logger.info("Starting Alpha Signal Factory")
-    
-    for date in dates:
-        try:
-            # 创建工厂对象并运行
-            factory = AlphaSignalFactory()
-            # 示例：仅添加 TS 算子，且 margin >= 0.05
-            factory.process_signals(date_time=date, priority=1, mode='normal', operator_type='group', margin_limit=0.0015, sharpe_limit=1.45, fitness_limit=0.9)
-            logger.info("✅ Alpha signal processing completed successfully")
-        except Exception as e:
-            logger.error(f"❌ Alpha signal processing failed: {str(e)}")
-            raise
+    Run AlphaSignalFactory from the command line.
 
-# 添加命令行执行入口
+    Usage::
+
+        python src/alpha_signal_factory.py
+
+    Customize *config* dict below for specific dataset/date/region runs.
+    """
+    logger = Logger()
+    logger.info("Starting Alpha Signal Factory (Noise-Hedging)")
+
+    config = {
+        'dataset_id': 'analyst10',
+        'date_time': ['20260704', '20260703'],
+        'region': 'GLB',
+        'priority': 2,
+        'mode': 'normal',
+        'margin_limit': 0.0,
+        'sharpe_limit': 0.8,
+        'fitness_limit': 0.3,
+    }
+
+    try:
+        factory = AlphaSignalFactory()
+        factory.process_signals(**config)
+        logger.info("Alpha signal processing completed successfully")
+    except Exception as e:
+        logger.error(f"Alpha signal processing failed: {e}")
+        raise
+
+
 if __name__ == "__main__":
     main()
-#python src/alpha_signal_factory.py
-#已经优化了20250824和20250814
