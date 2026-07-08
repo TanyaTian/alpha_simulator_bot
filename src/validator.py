@@ -728,8 +728,9 @@ class ExpressionValidator:
                 errors.append(f"无效的字段名: {arg.value}")
         elif expected_type == 'category':
             if not function_name.startswith('group_'):
-                # 非group函数的category参数：允许原始category类型或派生类别（bucket、group_cartesian_product等）
-                if arg.node_type != 'category' and not self._is_derived_category(arg):
+                # 非group函数的category参数：允许category类型、派生类别（bucket等）、以及field类型的类别类字段名
+                # field类型也需要接受，因为像 sta3_pvgroup3_sector 这样的字段名在平台上就是合法的类别/分组标识
+                if arg.node_type != 'category' and arg.node_type != 'field' and not self._is_derived_category(arg):
                     errors.append(f"参数 {arg_index+1} 应该是一个类别，但得到 {arg.node_type}")
                 elif arg.node_type == 'category' and arg.value not in valid_categories:
                     errors.append(f"无效的类别: {arg.value}")
