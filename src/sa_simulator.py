@@ -6,7 +6,7 @@ import pandas as pd
 from dao import SuperAlphaQueueDAO
 from config_manager import config_manager
 from logger import Logger
-from ace_lib import simulate_alpha_list, set_alpha_properties, check_prod_corr_test, generate_alpha
+from ace_lib import simulate_alpha_list, set_alpha_properties, check_prod_corr_test, check_self_corr_test, generate_alpha
 from llm_calls import generate_super_alpha_descriptions
 
 class SASimulator:
@@ -210,40 +210,48 @@ class SASimulator:
                         pc = prod_corr_result['value'].max() if not prod_corr_result.empty else 1.0
                         
                         if pc < 0.7:
-                            self.logger.info(f"Alpha {alpha_id} passed prod correlation check with value {pc}. Qualified!")
+                            self.logger.info(f"Alpha {alpha_id} passed prod correlation check with value {pc}. Checking self correlation.")
                             
-                            # 生成alpha描述
-                            selection_description = None
-                            combo_description = None
-                            try:
-                                selection_description, combo_description = generate_super_alpha_descriptions(session, alpha_id)
-                                if selection_description and combo_description:
-                                    self.logger.info(f"Generated descriptions for alpha {alpha_id}")
-                                else:
-                                    self.logger.warning(f"Failed to generate descriptions for alpha {alpha_id}, using defaults")
+                            self_corr_result = check_self_corr_test(session, alpha_id=alpha_id)
+                            sc = self_corr_result['value'].max() if not self_corr_result.empty else 1.0
+                            
+                            if sc < 0.5:
+                                self.logger.info(f"Alpha {alpha_id} passed self correlation check with value {sc}. Qualified!")
+                                
+                                # 生成alpha描述
+                                selection_description = None
+                                combo_description = None
+                                try:
+                                    selection_description, combo_description = generate_super_alpha_descriptions(session, alpha_id)
+                                    if selection_description and combo_description:
+                                        self.logger.info(f"Generated descriptions for alpha {alpha_id}")
+                                    else:
+                                        self.logger.warning(f"Failed to generate descriptions for alpha {alpha_id}, using defaults")
+                                        selection_description = "None"
+                                        combo_description = "None"
+                                except Exception as e:
+                                    self.logger.error(f"Error generating descriptions for alpha {alpha_id}: {e}")
                                     selection_description = "None"
                                     combo_description = "None"
-                            except Exception as e:
-                                self.logger.error(f"Error generating descriptions for alpha {alpha_id}: {e}")
-                                selection_description = "None"
-                                combo_description = "None"
-                            
-                            # 标记合格的Alpha，设置name为SA的pc值
-                            name = f"SA_{pc:.4f}" if pc is not None else f"SA_unknown"
-                            set_alpha_properties(
-                                session, 
-                                alpha_id, 
-                                tags=['qualified_super_alpha'], 
-                                name=name,
-                                selection_desc=selection_description,
-                                combo_desc=combo_description)
-                            
-                            # 记录这个alpha是合格的（可选，可以记录到日志或数据库）
-                            self.logger.info(f"Alpha {alpha_id} is qualified and has been tagged")
+                                
+                                # 标记合格的Alpha，设置name为SA的pc值
+                                name = f"SA_{pc:.4f}" if pc is not None else f"SA_unknown"
+                                set_alpha_properties(
+                                    session, 
+                                    alpha_id, 
+                                    tags=['qualified_super_alpha'], 
+                                    name=name,
+                                    selection_desc=selection_description,
+                                    combo_desc=combo_description)
+                                
+                                # 记录这个alpha是合格的（可选，可以记录到日志或数据库）
+                                self.logger.info(f"Alpha {alpha_id} is qualified and has been tagged")
+                            else:
+                                self.logger.info(f"Alpha {alpha_id} failed self correlation check with value {sc}.")
                         else:
                             self.logger.info(f"Alpha {alpha_id} failed prod correlation check with value {pc}.")
                     except Exception as e:
-                        self.logger.error(f"Error checking prod correlation for alpha {alpha_id}: {e}")
+                        self.logger.error(f"Error checking correlations for alpha {alpha_id}: {e}")
                 else:
                     self.logger.info(f"Alpha {alpha_id} did not meet qualification criteria (Sharpe: {sharpe_value}, Fitness: {fitness_value})")
             else:
