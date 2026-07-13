@@ -10,6 +10,7 @@ STRICT_SHARPE_THRESHOLD = 1.3    # 夏普率硬门槛 (必须为正)
 STRICT_FITNESS_THRESHOLD = 0.8   # Fitness 硬门槛 (必须为正)
 MIN_YEARLY_SHARPE = -5.0         # 单年夏普最低允许值
 STRICT_MARGIN_THRESHOLD = 0.0005 # Margin 硬门槛
+HIGH_TURNOVER_THRESHOLD = 0.20   # 高换手率门槛，超过此值的 Alpha 免除 Margin 检查
 
 def _passes_hard_filters(alpha: Dict[str, Any]) -> bool:
     """
@@ -34,10 +35,12 @@ def _passes_hard_filters(alpha: Dict[str, Any]) -> bool:
     if overall_sharpe < STRICT_SHARPE_THRESHOLD or overall_fitness < STRICT_FITNESS_THRESHOLD:
         return False
 
-    # 2. Margin 检查
-    margin = safe_get(is_stats, "margin", 0.0)
-    if margin < STRICT_MARGIN_THRESHOLD:
-        return False
+    # 2. Margin 检查 (高换手率 Alpha 免除：turnover > 20% 视为另一种阿尔法类型，不需要 margin 门槛)
+    turnover = safe_get(is_stats, "turnover", 0.0)
+    if turnover <= HIGH_TURNOVER_THRESHOLD:
+        margin = safe_get(is_stats, "margin", 0.0)
+        if margin < STRICT_MARGIN_THRESHOLD:
+            return False
 
     # 3. 年度夏普稳定性检查
     filled_yearly_sharpe = yearly_stats["sharpe"].fillna(0.0).astype(float)
