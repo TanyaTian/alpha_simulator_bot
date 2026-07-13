@@ -202,21 +202,21 @@ class SASimulator:
                         self.logger.info(f"Alpha {alpha_id}: sharpe 值不为 0.0 的年份少于 8 年 ({sharpe_non_zero_years} 年)，不合格。")
                         continue
                     
-                    self.logger.info(f"Alpha {alpha_id} passed initial checks (is_tests and sharpe_non_zero_years). Checking prod correlation.")
+                    self.logger.info(f"Alpha {alpha_id} passed initial checks (is_tests and sharpe_non_zero_years). Checking self correlation.")
 
                     # 检查相关性
                     try:
-                        prod_corr_result = check_prod_corr_test(session, alpha_id=alpha_id)
-                        pc = prod_corr_result['value'].max() if not prod_corr_result.empty else 1.0
+                        self_corr_result = check_self_corr_test(session, alpha_id=alpha_id)
+                        sc = self_corr_result['value'].max() if not self_corr_result.empty else 1.0
                         
-                        if pc < 0.7:
-                            self.logger.info(f"Alpha {alpha_id} passed prod correlation check with value {pc}. Checking self correlation.")
+                        if sc < 0.5:
+                            self.logger.info(f"Alpha {alpha_id} passed self correlation check with value {sc}. Checking prod correlation.")
                             
-                            self_corr_result = check_self_corr_test(session, alpha_id=alpha_id)
-                            sc = self_corr_result['value'].max() if not self_corr_result.empty else 1.0
+                            prod_corr_result = check_prod_corr_test(session, alpha_id=alpha_id)
+                            pc = prod_corr_result['value'].max() if not prod_corr_result.empty else 1.0
                             
-                            if sc < 0.5:
-                                self.logger.info(f"Alpha {alpha_id} passed self correlation check with value {sc}. Qualified!")
+                            if pc < 0.7:
+                                self.logger.info(f"Alpha {alpha_id} passed prod correlation check with value {pc}. Qualified!")
                                 
                                 # 生成alpha描述
                                 selection_description = None
@@ -247,9 +247,9 @@ class SASimulator:
                                 # 记录这个alpha是合格的（可选，可以记录到日志或数据库）
                                 self.logger.info(f"Alpha {alpha_id} is qualified and has been tagged")
                             else:
-                                self.logger.info(f"Alpha {alpha_id} failed self correlation check with value {sc}.")
+                                self.logger.info(f"Alpha {alpha_id} failed prod correlation check with value {pc}.")
                         else:
-                            self.logger.info(f"Alpha {alpha_id} failed prod correlation check with value {pc}.")
+                            self.logger.info(f"Alpha {alpha_id} failed self correlation check with value {sc}.")
                     except Exception as e:
                         self.logger.error(f"Error checking correlations for alpha {alpha_id}: {e}")
                 else:
