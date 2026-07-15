@@ -6,8 +6,9 @@ import pandas as pd
 from dao import SuperAlphaQueueDAO
 from config_manager import config_manager
 from logger import Logger
-from ace_lib import simulate_alpha_list, set_alpha_properties, check_prod_corr_test, check_self_corr_test, generate_alpha
+from ace_lib import simulate_alpha_list, set_alpha_properties, check_prod_corr_test, generate_alpha
 from llm_calls import generate_super_alpha_descriptions
+from self_corr_calculator import calc_self_corr, load_data, download_data
 
 class SASimulator:
     def __init__(self):
@@ -182,7 +183,8 @@ class SASimulator:
                 fitness_value = is_stats['fitness'].iloc[0]
                 
                 # 合格条件: Sharpe和Fitness都大于4 (ASI/GLB 为 3)
-                threshold = 3 if self.region in ['ASI', 'GLB'] else 4
+                #threshold = 3 if self.region in ['ASI', 'GLB'] else 4
+                threshold = 3
                 if sharpe_value > threshold and fitness_value > threshold:
                     self.logger.info(f"Alpha {alpha_id} qualified with Sharpe: {sharpe_value}, Fitness: {fitness_value} (Threshold: {threshold})")
                     
@@ -205,9 +207,19 @@ class SASimulator:
                     self.logger.info(f"Alpha {alpha_id} passed initial checks (is_tests and sharpe_non_zero_years). Checking self correlation.")
 
                     # 检查相关性
+                    # 检查相关性 - 使用本地数据
                     try:
-                        self_corr_result = check_self_corr_test(session, alpha_id=alpha_id)
-                        sc = self_corr_result['value'].max() if not self_corr_result.empty else 1.0
+                        # 1. 下载/更新本地数据（可以考虑在类初始化时做一次，或者定期更新）
+                        download_data(session, flag_increment=True)
+                        os_alpha_ids, os_alpha_rets = load_data()
+                        
+                        # 2. 处理可能的列名重复问题
+                        if isinstance(os_alpha_rets, pd.DataFrame) and not os_alpha_rets.empty:
+                            if os_alpha_rets.columns.duplicated().any():
+                                os_alpha_rets = os_alpha_rets.loc[:, ~os_alpha_rets.columns.duplicated()]
+                        
+                        # 3. 计算 self correlation
+                        sc = calc_self_corr(alpha_id, session, os_alpha_rets, os_alpha_ids)
                         
                         if sc < 0.5:
                             self.logger.info(f"Alpha {alpha_id} passed self correlation check with value {sc}. Checking prod correlation.")
