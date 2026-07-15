@@ -377,6 +377,8 @@ def _build_data_fields(session, alpha_id: str, state: WorkflowState) -> List[str
         return cached_categories
 
     # 首次构建或上一轮失败：获取 Alpha 所使用的数据集
+    # 空结果不一定是确定性的：会话老化、平台限流、网络抖动都可能导致 API 返回 count=0
+    # 因此空结果也需要重试（先重新登录再重试）
     all_datasets_df = pd.DataFrame()
     max_retries = 3
     for attempt in range(max_retries):
@@ -388,16 +390,15 @@ def _build_data_fields(session, alpha_id: str, state: WorkflowState) -> List[str
                 break
             else:
                 logger.warning(f"Attempt {attempt + 1}: get_datasets_for_alpha returned empty for {alpha_id}")
-                # 返回空是确定性的, 不需要重试
-                break
+                # 空结果也可能由瞬态问题导致，重新登录后重试
         except Exception as e:
             logger.error(f"Attempt {attempt + 1}: get_datasets_for_alpha failed: {e}")
 
-            if attempt < max_retries - 1:
-                sleep_time = (attempt + 1) * 60 # 60s, 120s
-                logger.info(f"Retrying get_datasets_for_alpha in {sleep_time}s...")
-                time.sleep(sleep_time)
-                session = _safe_relogin(session)
+        if attempt < max_retries - 1:
+            sleep_time = (attempt + 1) * 60  # 60s, 120s
+            logger.info(f"Retrying get_datasets_for_alpha in {sleep_time}s (attempt {attempt + 1}/{max_retries})...")
+            time.sleep(sleep_time)
+            session = _safe_relogin(session)
 
     field_categories = []
     if all_datasets_df is not None and not all_datasets_df.empty and 'category_id' in all_datasets_df.columns:
