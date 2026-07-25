@@ -12,6 +12,11 @@ MIN_YEARLY_SHARPE = -5.0         # 单年夏普最低允许值
 STRICT_MARGIN_THRESHOLD = 0.0005 # Margin 硬门槛
 HIGH_TURNOVER_THRESHOLD = 0.20   # 高换手率门槛，超过此值的 Alpha 免除 Margin 检查
 
+# --- GLB 区域 Sub-region 均衡评分常量 ---
+_GLB_SUB_REGION_CHECKS = {"LOW_GLB_AMER_SHARPE", "LOW_GLB_EMEA_SHARPE", "LOW_GLB_APAC_SHARPE"}
+_GLB_SUB_REGION_BALANCE_THRESHOLD = 0.6   # Sub-region Sharpe 均衡参考阈值
+_GLB_SUB_REGION_PENALTY_WEIGHT = 300.0    # Sub-region 非线性扣分权重
+
 def _passes_hard_filters(alpha: Dict[str, Any]) -> bool:
     """
     应用硬过滤规则，剔除不符合基本要求的 Alpha。
@@ -56,45 +61,69 @@ def _passes_hard_filters(alpha: Dict[str, Any]) -> bool:
 
 def calculate_pragmatic_score(alpha: Dict[str, Any]) -> Dict[str, float]:
     """
-    更新后的务实评分核心逻辑：
-    1. 基础分: 1000
-    2. 失败项扣分: 每个 FAIL 扣 100 分
-    3. 邻近度惩罚: 每个失败项距离临界值的相对距离 * 10
-    4. 性能奖励: Sharpe * 10, Fitness * 5
+    Pragmatic scoring logic. 非 GLB region 使用通用评分；GLB region 对
+    LOW_GLB_AMER/EMEA/APAC_SHARPE 三项 FAIL 采用值域感知非线性扣分，
+    取代统一的 -100/FAIL，以惩罚 sub-region 极端不均衡的 Alpha。
+
+    Score = 1000 - non_sub_fail * 100 - sub_region_penalty + sharpe * 10 + fitness * 5 - proximity * 10
     """
     check_df = alpha.get("check_df")
     if check_df is None or check_df.empty:
         return {"final_score": -1000.0, "fail_count": 99.0}
 
-    # 1. 统计失败项数量
-    fail_count = (check_df["result"] == "FAIL").sum()
-    
-    # 2. 计算邻近度惩罚 (权重 10.0)
+    # 判断是否为 GLB region
+    region = alpha.get("details", {}).get("settings", {}).get("region", "")
+    is_glb = (region == "GLB")
+
+    # 1. 统计 FAIL 项（总量）
+    all_fails = check_df[check_df["result"] == "FAIL"]
+    fail_count = len(all_fails)
+
+    # 2. GLB sub-region 值域感知扣分
+    sub_region_penalty = 0.0
+    non_sub_fail_count = fail_count  # 非 sub-region FAIL 数量
+
+    if is_glb and fail_count > 0:
+        sub_fails = all_fails[all_fails["name"].isin(_GLB_SUB_REGION_CHECKS)]
+        non_sub_fail_count = fail_count - len(sub_fails)
+
+        for _, row in sub_fails.iterrows():
+            try:
+                value = float(str(row.get("value", "0")).split()[0])
+                ratio = value / _GLB_SUB_REGION_BALANCE_THRESHOLD
+                if ratio < 1.0:
+                    sub_region_penalty += ((1.0 - ratio) ** 2) * _GLB_SUB_REGION_PENALTY_WEIGHT
+            except (ValueError, TypeError):
+                sub_region_penalty += 100.0  # 解析失败时回退为统一扣分
+
+    # 3. 邻近度惩罚 (权重 10.0，对所有 FAIL 项统一计算)
     proximity_penalty = 0.0
-    fails = check_df[check_df["result"] == "FAIL"]
-    for _, row in fails.iterrows():
+    for _, row in all_fails.iterrows():
         try:
             val = float(str(row.get("value", "0")).split()[0])
             limit = float(str(row.get("limit", "0")).split()[0])
             if limit != 0:
                 proximity_penalty += (abs(val - limit) / abs(limit))
             else:
-                proximity_penalty += abs(val) 
+                proximity_penalty += abs(val)
         except:
             proximity_penalty += 1.0
 
-    # 3. 传统指标奖励 (与邻近度惩罚保持权重平衡)
+    # 4. 传统指标奖励
     is_stats = alpha.get("details", {}).get("is", {})
     sharpe = max(0, float(is_stats.get("sharpe", 0.0)))
     fitness = max(0, float(is_stats.get("fitness", 0.0)))
-    
+
     # 最终得分构造
-    final_score = (1000.0 
-                   - (fail_count * 100.0) 
-                   + (sharpe * 10.0) 
-                   + (fitness * 5.0) 
+    # - GLB: non-sub-region FAIL 用 -100，sub-region FAIL 用值域感知扣分
+    # - 非 GLB: 所有 FAIL 统一 -100
+    final_score = (1000.0
+                   - (non_sub_fail_count * 100.0)
+                   - sub_region_penalty
+                   + (sharpe * 10.0)
+                   + (fitness * 5.0)
                    - (proximity_penalty * 10.0))
-    
+
     return {
         "final_score": final_score,
         "fail_count": float(fail_count),
