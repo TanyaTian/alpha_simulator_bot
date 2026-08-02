@@ -79,7 +79,7 @@ MAX_TOTAL_KB = 8000
 # ========================================================================
 
 class ProposedAlpha(BaseModel):
-    reasoning: str = Field(description="The reasoning behind the proposed changes.")
+    reasoning: str = Field(description="The reasoning behind the proposed changes. MUST include: (1) semantic unit analysis — how many semantic units were identified, their data characteristics (frequency, noise level), and what preprocessing each unit needs; (2) the Phase 1→Phase 2→Phase 3 pipeline design for this variant.")
     new_expression: str = Field(description="The new, modified Alpha expression.")
     new_setting: dict = Field(description="A dictionary with new settings for 'neutralization', 'decay', and 'truncation'.")
 
@@ -746,9 +746,10 @@ def propose_and_generate_batch(state: WorkflowState) -> WorkflowState:
 
     # 6. 构造完整 Prompt
     prompt_parts = [
-        "# Statistical Analysis Task: Mathematical Expression Variants\n\n",
+        "# Statistical Analysis Task: Mathematical Expression Optimization\n\n",
         "You are a research assistant specializing in statistical modeling and mathematical expression analysis. "
-        "Your task is to analyze the given mathematical expression and propose modified variants that may improve statistical properties.\n\n",
+        "Your task is to analyze the given mathematical expression, decompose it into semantic units, "
+        "and propose optimized variants that may improve statistical properties.\n\n",
         "## 1. Input Expression\n",
         f"```\n{state.get('seed_expression', '')}\n```\n\n",
         "## 2. Configuration Parameters\n",
@@ -779,21 +780,34 @@ def propose_and_generate_batch(state: WorkflowState) -> WorkflowState:
         "- Bonus items (optimize where possible)\n",
         "Minimize correlation metrics (pc, sc, ppc): lower correlation means the alpha is more unique and less redundant.\n",
         "Maximize margin: higher margin indicates stronger predictive signal and better profitability.\n\n",
-        "## 9. Guidelines\n",
+        "## 9. Research & Optimization Strategy\n",
+        "Follow the tiered optimization framework below. The framework introduces the concept of "
+        "**Semantic Units** — the smallest sub-expressions with independent economic meaning. "
+        "For expressions with binary/multivariate operators (ts_corr, ts_regression, etc.), "
+        "you MUST first identify the semantic units, apply per-unit preprocessing, then recombine "
+        "before applying whole-expression optimization.\n\n",
         f"{prompt_principles}\n\n",
-        "## 10. Reference Examples\n",
+        "## 10. Template Library\n",
+        "The templates below provide standard processing patterns. Use them as reference "
+        "when designing preprocessing pipelines for individual semantic units (Phase 1) "
+        "or when composing units into a final expression (Phase 2).\n\n",
         f"{prompt_examples}\n\n",
         "## 11. Output Format\n",
         "Generate 20 expression variants. For each variant, you MUST propose a 'new_setting' dictionary with:\n",
         f"- 'neutralization': MUST be chosen from: {NEUTRALIZATION_OPTIONS}\n",
         "- 'decay': MUST be an integer between 0 and 504 (inclusive).\n",
         "- 'truncation': MUST be a float between 0.0 and 1.0 (exclusive). Common values: 0.1 to 0.8.\n\n",
+        "CRITICAL: For each variant, the 'reasoning' field MUST include:\n",
+        "- How many semantic units were identified in the input expression\n",
+        "- Key data characteristics of each unit (frequency, noise level, distribution)\n",
+        "- What preprocessing (Phase 1) was applied to each unit and why\n",
+        "- How the units were recombined (Phase 2) and what whole-expression optimization (Phase 3) was applied\n\n",
         "Return ONLY a JSON object with this structure:\n",
         "```json\n",
         "{\n",
         '  "proposals": [\n',
         "    {\n",
-        '      "reasoning": "Brief technical justification for the modification",\n',
+        '      "reasoning": "Semantic units: 2 — Unit A: [name, characteristics, preprocessing pipeline]; Unit B: [name, characteristics, preprocessing pipeline]; Phase 2: [recombination method]; Phase 3: [whole-expression optimization]",\n',
         '      "new_expression": "valid_mathematical_expression_here",\n',
         '      "new_setting": {"neutralization": "SLOW", "decay": 4, "truncation": 0.01}\n',
         "    }\n",
