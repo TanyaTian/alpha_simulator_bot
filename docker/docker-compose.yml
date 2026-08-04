@@ -16,3 +16,13 @@ services:
       - "host.docker.internal:host-gateway"  # 👈 让容器能通过这个名字访问宿主机
     ports:
       - "5001:5001"  # 👈 把容器的 5001 映射到宿主机的 5001
+    deploy:
+      resources:
+        limits:
+          cpus: '0.8'
+          memory: 1400M
+        reservations:
+          cpus: '0.2'
+          memory: 512M
+    memswap_limit: 1400M  # 禁止 swap，内存超限直接 OOM 而不会拖垮系统
+    pids_limit: 100       # 防止进程数爆炸
