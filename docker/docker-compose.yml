@@ -21,8 +21,9 @@ services:
         limits:
           cpus: '0.8'
           memory: 1400M
+          pids: 100  # 在这里设置 PID 限制
         reservations:
           cpus: '0.2'
           memory: 512M
     memswap_limit: 1400M  # 禁止 swap，内存超限直接 OOM 而不会拖垮系统
-    pids_limit: 100       # 防止进程数爆炸
+    #pids_limit: 100       # 防止进程数爆炸
