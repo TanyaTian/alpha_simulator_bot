@@ -455,6 +455,28 @@ def _build_data_fields(session, alpha_id: str, state: WorkflowState) -> List[str
     logger.info(f"Loaded {len(state['valid_data_fields'])} total valid data fields.")
     return field_categories
 
+def _force_dedup_fields(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    强制显式去重 DataFrame 中的字段（按 'id' 列）
+    使用最基础的方法确保去重逻辑清晰可控
+    """
+    if df is None or df.empty:
+        return df
+    
+    # 方法1：使用字典（最直观）
+    unique_dict = {}
+    for _, row in df.iterrows():
+        field_id = row['id']
+        if field_id not in unique_dict:
+            unique_dict[field_id] = row.to_dict()
+    result = pd.DataFrame(list(unique_dict.values()))
+    
+    # 验证去重效果
+    if len(result) != len(result['id'].unique()):
+        logger.warning(f"WARNING: Deduplication failed! {len(result)} rows vs {len(result['id'].unique())} unique IDs")
+    
+    return result
+
 # ========================================================================
 # 知识库加载
 # ========================================================================
@@ -698,8 +720,17 @@ def propose_and_generate_batch(state: WorkflowState) -> WorkflowState:
     # 3. 准备数据字段样本
     fields_df = state.get('all_fields_df')
     if fields_df is not None and not fields_df.empty:
+        fields_df = _force_dedup_fields(fields_df)
+        # 立即更新 state，确保后续使用干净数据
+        state['all_fields_df'] = fields_df
+        # ===== 关键修复：同步更新 valid_data_fields =====
+        state['valid_data_fields'] = set(fields_df['id'].unique())
+        
         sample_size = min(1500, len(fields_df))
         datafields_sample = fields_df.sample(n=sample_size)[['id', 'description']].to_string(index=False)
+        
+        # 日志记录
+        logger.info(f"Prepared datafields sample with {len(fields_df)} unique fields")
     else:
         datafields_sample = "No data fields available."
 
