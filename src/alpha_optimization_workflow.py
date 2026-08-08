@@ -432,6 +432,9 @@ def _build_data_fields(session, alpha_id: str, state: WorkflowState) -> List[str
 
     all_fields_df = pd.concat(dfs_to_concat, ignore_index=True) if dfs_to_concat else pd.DataFrame()
 
+    if not all_fields_df.empty:
+        all_fields_df = all_fields_df.drop_duplicates(subset=['id'])
+
     state["all_fields_df"] = all_fields_df
     state["valid_data_fields"] = set(all_fields_df['id'].unique()) if not all_fields_df.empty else set()
 
@@ -445,6 +448,8 @@ def _build_data_fields(session, alpha_id: str, state: WorkflowState) -> List[str
         extra_metadata_df = _fetch_field_metadata(session, extra_field_ids, state)
         if not extra_metadata_df.empty:
             state["all_fields_df"] = pd.concat([state["all_fields_df"], extra_metadata_df], ignore_index=True)
+            if not state["all_fields_df"].empty:
+                state["all_fields_df"] = state["all_fields_df"].drop_duplicates(subset=['id'])
             state["valid_data_fields"].update(extra_metadata_df['id'].unique())
 
     logger.info(f"Loaded {len(state['valid_data_fields'])} total valid data fields.")
