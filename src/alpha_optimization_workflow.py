@@ -1241,33 +1241,13 @@ def batch_simulate_and_select_best(state: WorkflowState) -> WorkflowState:
                     else:
                         logger.info(f"Alpha {alpha_id} passed checks but failed correlations.")
 
-                # 数据不足：移除不良字段
+                # 数据不足：仅记录日志，不删除字段
+                # 注意：alpha 表达式数据年限短是该表达式的组合/参数导致的，
+                # 不代表使用的字段本身有问题，不应全局移除字段。
                 if 0 < active_years < 6:
-                    logger.info(f"Alpha {alpha_id} has insufficient data ({active_years} years). Removing problematic fields...")
-                    settings = state["row_setting"]
-                    region = settings.get("region")
-                    universe = settings.get("universe")
-                    delay = settings.get("delay", 1)
-
-                    grouping_fields_df = get_datafields_with_cache(session, region=region, universe=universe,
-                                                                    delay=delay, data_type='GROUP', dataset_id='pv1')
-                    price_fields_df = get_datafields_with_cache(session, region=region, universe=universe,
-                                                                 delay=delay, data_type='MATRIX', dataset_id='pv1')
-
-                    pv1_fields = set()
-                    if grouping_fields_df is not None:
-                        pv1_fields.update(grouping_fields_df['id'].tolist())
-                    if price_fields_df is not None:
-                        pv1_fields.update(price_fields_df['id'].tolist())
-
-                    used_fields = utils.extract_datafields(expression, session)
-                    fields_to_remove = {field for field in used_fields if field not in pv1_fields}
-
-                    if fields_to_remove:
-                        logger.info(f"Removing {len(fields_to_remove)} fields with insufficient history")
-                        state["valid_data_fields"].difference_update(fields_to_remove)
-                        state["all_fields_df"] = state["all_fields_df"][
-                            ~state["all_fields_df"]['id'].isin(fields_to_remove)]
+                    logger.info(f"Alpha {alpha_id} has insufficient data ({active_years} years). "
+                                "This is likely due to the expression structure/parameters, "
+                                "not the fields themselves. Fields will NOT be removed.")
 
         except Exception as e:
             logger.error(f"Error processing simulated alpha {alpha_id}: {e}")
