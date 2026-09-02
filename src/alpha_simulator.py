@@ -164,12 +164,15 @@ class AlphaSimulator:
         
         return []
 
-    def filter_alphas(self, alpha_ids: List[str], tracker: TaskTracker) -> Tuple[List[Dict], List[Dict]]:
+    def filter_alphas(self, alpha_ids: List[str], tracker: TaskTracker, region: str) -> Tuple[List[Dict], List[Dict]]:
         """
         过滤符合条件的 alpha，并提取反转信号建议。
+
+        CHN 市场不允许做空，因此负 Sharpe alpha 不生成 reverse 重跑任务。
         """
         passed_alphas = []
         reversal_proposals = []
+        allow_reversal = str(region).strip().upper() != 'CHN'
         session = check_session_and_relogin(self.session)
         self.session = session
         
@@ -241,12 +244,18 @@ class AlphaSimulator:
                     else:
                         self.logger.info(f"Alpha {alpha_id} filtered: {fail_reason}")
                         if sharpe < -0.8 and fitness < -0.3 and expression:
-                            self.logger.info(f"💡 Alpha {alpha_id} triggers reversal (Sharpe: {sharpe:.2f}, Fitness: {fitness:.2f})")
-                            reversal_proposals.append({
-                                'type': 'REGULAR',
-                                'settings': alpha_details.get("settings", {}),
-                                'regular': f"reverse({expression})"
-                            })
+                            if allow_reversal:
+                                self.logger.info(f"💡 Alpha {alpha_id} triggers reversal (Sharpe: {sharpe:.2f}, Fitness: {fitness:.2f})")
+                                reversal_proposals.append({
+                                    'type': 'REGULAR',
+                                    'settings': alpha_details.get("settings", {}),
+                                    'regular': f"reverse({expression})"
+                                })
+                            else:
+                                self.logger.info(
+                                    f"🚫 Alpha {alpha_id} has negative Sharpe in CHN; "
+                                    "skipping reversal because short selling is not allowed."
+                                )
             except Exception as e:
                 self.logger.error(f"Error filtering alpha {alpha_id}: {e}")
                 
@@ -352,7 +361,7 @@ class AlphaSimulator:
                     ids = [r['alpha_id'] for r in sim_results if r.get('alpha_id')]
                     
                     if ids:
-                        passed, reversals = self.filter_alphas(ids, tracker)
+                        passed, reversals = self.filter_alphas(ids, tracker, region)
                         all_passed.extend(passed)
                         
                         for rev in reversals:
