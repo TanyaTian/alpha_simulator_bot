@@ -5,6 +5,7 @@ import json
 import requests
 import threading
 import random
+import math
 import pandas as pd
 from typing import List, Dict, Optional, Union, Tuple
 from collections import deque
@@ -21,6 +22,63 @@ from ace_lib import (
     check_prod_corr_test, set_alpha_properties
 )
 from self_corr_calculator import calc_self_corr, load_data, download_data
+
+
+CHN_TAG_MIN_SHARPE = 1.2
+CHN_TAG_MIN_FITNESS = 0.7
+CHN_TAG_MIN_FAILED_ROBUST_LIMIT_RATIO = 0.8
+CHN_ROBUST_RATIO_CHECK = 'LOW_ROBUST_UNIVERSE_SHARPE.WITH_RATIO'
+
+
+def _finite_float(value):
+    """Return a finite float, or None for missing/non-numeric values."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _extract_check(check_df: pd.DataFrame, check_name: str) -> Optional[Dict]:
+    """Extract one submission-check row without assuming every column exists."""
+    if check_df is None or check_df.empty or 'name' not in check_df.columns:
+        return None
+    matching = check_df.loc[check_df['name'] == check_name]
+    if matching.empty:
+        return None
+    return matching.iloc[0].to_dict()
+
+
+def evaluate_tag_eligibility(region: str, alpha_item: Dict) -> Tuple[bool, str]:
+    """Apply the CHN-only quality gate for adding the next-round tag."""
+    if str(region).strip().upper() != 'CHN':
+        return True, ''
+
+    sharpe = _finite_float(alpha_item.get('sharpe'))
+    fitness = _finite_float(alpha_item.get('fitness'))
+    if sharpe is None or sharpe <= CHN_TAG_MIN_SHARPE:
+        shown = 'missing' if sharpe is None else f'{sharpe:.4f}'
+        return False, f'CHN Sharpe {shown} must be > {CHN_TAG_MIN_SHARPE}'
+    if fitness is None or fitness <= CHN_TAG_MIN_FITNESS:
+        shown = 'missing' if fitness is None else f'{fitness:.4f}'
+        return False, f'CHN Fitness {shown} must be > {CHN_TAG_MIN_FITNESS}'
+
+    robust_check = alpha_item.get('chn_robust_ratio_check')
+    if robust_check and str(robust_check.get('result', '')).strip().upper() == 'FAIL':
+        value = _finite_float(robust_check.get('value'))
+        limit = _finite_float(robust_check.get('limit'))
+        if value is None or limit is None:
+            return False, 'CHN failed Robust Universe Sharpe check has missing value/limit'
+        required_value = CHN_TAG_MIN_FAILED_ROBUST_LIMIT_RATIO * limit
+        if value < required_value and not math.isclose(
+            value, required_value, rel_tol=1e-12, abs_tol=1e-12
+        ):
+            return False, (
+                f'CHN failed Robust Universe Sharpe value {value:.4f} is below '
+                f'80% of limit {limit:.4f} (required {required_value:.4f})'
+            )
+
+    return True, ''
 
 class TaskTracker:
     """用于跟踪任务执行时间，提供 should_stop 信号用于内部自愿退出"""
@@ -199,6 +257,7 @@ class AlphaSimulator:
                 if check_df is not None and not check_df.empty:
                     checks = check_df.set_index('name')['value'].to_dict()
                     checks_result = check_df.set_index('name')['result'].to_dict()
+                    chn_robust_ratio_check = _extract_check(check_df, CHN_ROBUST_RATIO_CHECK)
                     
                     sharpe = checks.get('LOW_SHARPE', 0)
                     fitness = checks.get('LOW_FITNESS', 0)
@@ -240,7 +299,12 @@ class AlphaSimulator:
 
                     if pass_check:
                         self.logger.info(f"✅ Alpha {alpha_id} passed filtering (Fitness: {fitness:.2f})")
-                        passed_alphas.append({'id': alpha_id, 'fitness': fitness})
+                        passed_alphas.append({
+                            'id': alpha_id,
+                            'sharpe': sharpe,
+                            'fitness': fitness,
+                            'chn_robust_ratio_check': chn_robust_ratio_check,
+                        })
                     else:
                         self.logger.info(f"Alpha {alpha_id} filtered: {fail_reason}")
                         if sharpe < -0.8 and fitness < -0.3 and expression:
@@ -305,8 +369,25 @@ class AlphaSimulator:
                         "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     }
                     self.stage_one_signal_dao.upsert_signal(record)
-                    safe_api_call(set_alpha_properties, session, alpha_id, tags=[f"AlphaSim_{context['date_time']}"])
-                    self.logger.info(f"✅ Saved Alpha {alpha_id} (Fitness: {alpha_item['fitness']:.2f}, MaxCorr: {max_corr:.4f})")
+                    tag_allowed, tag_fail_reason = evaluate_tag_eligibility(
+                        context.get('region'), alpha_item
+                    )
+                    if tag_allowed:
+                        safe_api_call(
+                            set_alpha_properties,
+                            session,
+                            alpha_id,
+                            tags=[f"AlphaSim_{context['date_time']}"]
+                        )
+                        self.logger.info(
+                            f"✅ Saved and tagged Alpha {alpha_id} "
+                            f"(Fitness: {alpha_item['fitness']:.2f}, MaxCorr: {max_corr:.4f})"
+                        )
+                    else:
+                        self.logger.info(
+                            f"✅ Saved Alpha {alpha_id} without tag: {tag_fail_reason} "
+                            f"(MaxCorr: {max_corr:.4f})"
+                        )
                 else:
                     self.logger.info(f"❌ Alpha {alpha_id} failed correlation (MaxCorr: {max_corr:.4f} >= 0.5)")
             except Exception as e:
