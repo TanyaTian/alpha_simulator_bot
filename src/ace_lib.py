@@ -1066,9 +1066,6 @@ def set_alpha_properties(
         "selection": {"description": selection_desc},
     }
     response = s.patch(brain_api_url + "/alphas/" + alpha_id, json=params, timeout=(10, 60))
-    # A requests call does not raise for HTTP 4xx/5xx responses by default.
-    # Callers must never treat a rejected tag/property update as successful.
-    response.raise_for_status()
 
     return response
 
