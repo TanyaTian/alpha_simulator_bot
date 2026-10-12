@@ -28,6 +28,9 @@ CHN_TAG_MIN_SHARPE = 1.2
 CHN_TAG_MIN_FITNESS = 0.7
 CHN_TAG_MIN_FAILED_ROBUST_LIMIT_RATIO = 0.8
 CHN_ROBUST_RATIO_CHECK = 'LOW_ROBUST_UNIVERSE_SHARPE.WITH_RATIO'
+TAG_WRITE_MAX_ATTEMPTS = 5
+TAG_WRITE_INITIAL_DELAY_SECONDS = 2.0
+TAG_WRITE_MAX_DELAY_SECONDS = 30.0
 
 
 def _finite_float(value):
@@ -79,6 +82,93 @@ def evaluate_tag_eligibility(region: str, alpha_item: Dict) -> Tuple[bool, str]:
             )
 
     return True, ''
+
+
+def _extract_tag_names(raw_tags) -> set[str]:
+    """Normalize tag payloads returned by different BRAIN API versions."""
+    if not isinstance(raw_tags, list):
+        return set()
+
+    names = set()
+    for item in raw_tags:
+        if isinstance(item, str):
+            names.add(item)
+        elif isinstance(item, dict):
+            for key in ('name', 'id', 'value'):
+                value = item.get(key)
+                if isinstance(value, str) and value:
+                    names.add(value)
+    return names
+
+
+def set_alpha_tags_verified(
+    session,
+    alpha_id: str,
+    tags: List[str],
+    max_attempts: int = TAG_WRITE_MAX_ATTEMPTS,
+    initial_delay: float = TAG_WRITE_INITIAL_DELAY_SECONDS,
+):
+    """Write Alpha tags and confirm through a fresh read, retrying on failure.
+
+    A successful PATCH alone is insufficient: the platform can reject a request
+    with a non-2xx response, or acknowledge it before the updated tags are
+    visible.  This function only returns after every requested tag is observed
+    on the Alpha returned by the platform.
+    """
+    normalized_tags = [
+        str(tag).strip()
+        for tag in tags
+        if tag is not None and str(tag).strip()
+    ]
+    requested_tags = set(normalized_tags)
+    if not requested_tags:
+        raise ValueError("tags must contain at least one non-empty tag")
+    if max_attempts < 1:
+        raise ValueError("max_attempts must be at least 1")
+
+    delay = max(0.0, float(initial_delay))
+    last_error = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            update_response = set_alpha_properties(
+                session, alpha_id, tags=normalized_tags
+            )
+            # Keep this check here even though ace_lib also checks it. It makes
+            # the reliability contract explicit if that implementation changes.
+            update_response.raise_for_status()
+
+            verify_response = session.get(
+                f"https://api.worldquantbrain.com/alphas/{alpha_id}",
+                timeout=60,
+            )
+            verify_response.raise_for_status()
+            actual_tags = _extract_tag_names(verify_response.json().get('tags'))
+            missing_tags = requested_tags - actual_tags
+            if not missing_tags:
+                return update_response
+
+            raise RuntimeError(
+                f"tag update was not visible after PATCH; missing={sorted(missing_tags)}"
+            )
+        except Exception as exc:
+            last_error = exc
+            if attempt >= max_attempts:
+                break
+            alpha_logger_message = (
+                f"Tag write/verification failed for Alpha {alpha_id} "
+                f"(attempt {attempt}/{max_attempts}): {exc}. "
+                f"Retrying in {delay:.1f}s."
+            )
+            Logger().logger.warning(alpha_logger_message)
+            time.sleep(delay)
+            delay = min(max(delay * 2, 1.0), TAG_WRITE_MAX_DELAY_SECONDS)
+
+    raise RuntimeError(
+        f"failed to apply and verify tags {sorted(requested_tags)} for Alpha "
+        f"{alpha_id} after {max_attempts} attempts"
+    ) from last_error
+
 
 class TaskTracker:
     """用于跟踪任务执行时间，提供 should_stop 信号用于内部自愿退出"""
@@ -373,14 +463,14 @@ class AlphaSimulator:
                         context.get('region'), alpha_item
                     )
                     if tag_allowed:
-                        safe_api_call(
-                            set_alpha_properties,
+                        tag = f"AlphaSim_{context['date_time']}"
+                        set_alpha_tags_verified(
                             session,
                             alpha_id,
-                            tags=[f"AlphaSim_{context['date_time']}"]
+                            tags=[tag],
                         )
                         self.logger.info(
-                            f"✅ Saved and tagged Alpha {alpha_id} "
+                            f"✅ Saved and verified tag '{tag}' on Alpha {alpha_id} "
                             f"(Fitness: {alpha_item['fitness']:.2f}, MaxCorr: {max_corr:.4f})"
                         )
                     else:
