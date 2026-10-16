@@ -10,6 +10,12 @@ from ace_lib import simulate_alpha_list, set_alpha_properties, check_prod_corr_t
 from llm_calls import generate_super_alpha_descriptions
 from self_corr_calculator import calc_self_corr, load_data, download_data
 
+
+SHARPE_THRESHOLD = 3
+FITNESS_THRESHOLD = 4
+SELF_CORRELATION_THRESHOLD = 0.4
+
+
 class SASimulator:
     def __init__(self):
         """
@@ -182,11 +188,13 @@ class SASimulator:
                 sharpe_value = is_stats['sharpe'].iloc[0]
                 fitness_value = is_stats['fitness'].iloc[0]
                 
-                # 合格条件: Sharpe和Fitness都大于4 (ASI/GLB 为 3)
-                #threshold = 3 if self.region in ['ASI', 'GLB'] else 4
-                threshold = 3
-                if sharpe_value > threshold and fitness_value > threshold:
-                    self.logger.info(f"Alpha {alpha_id} qualified with Sharpe: {sharpe_value}, Fitness: {fitness_value} (Threshold: {threshold})")
+                # 初始合格条件: Sharpe > 3 且 Fitness > 4
+                if sharpe_value > SHARPE_THRESHOLD and fitness_value > FITNESS_THRESHOLD:
+                    self.logger.info(
+                        f"Alpha {alpha_id} qualified with Sharpe: {sharpe_value} "
+                        f"(Threshold: {SHARPE_THRESHOLD}), Fitness: {fitness_value} "
+                        f"(Threshold: {FITNESS_THRESHOLD})"
+                    )
                     
                     # 检查 is_tests 中是否包含 FAIL
                     if 'result' in is_tests.columns and (is_tests['result'] == 'FAIL').any():
@@ -221,8 +229,11 @@ class SASimulator:
                         # 3. 计算 self correlation
                         sc = calc_self_corr(alpha_id, session, os_alpha_rets, os_alpha_ids)
                         
-                        if sc < 0.5:
-                            self.logger.info(f"Alpha {alpha_id} passed self correlation check with value {sc}. Checking prod correlation.")
+                        if sc < SELF_CORRELATION_THRESHOLD:
+                            self.logger.info(
+                                f"Alpha {alpha_id} passed self correlation check with value {sc} "
+                                f"(Threshold: {SELF_CORRELATION_THRESHOLD}). Checking prod correlation."
+                            )
                             
                             prod_corr_result = check_prod_corr_test(session, alpha_id=alpha_id)
                             pc = prod_corr_result['value'].max() if not prod_corr_result.empty else 1.0
@@ -261,7 +272,10 @@ class SASimulator:
                             else:
                                 self.logger.info(f"Alpha {alpha_id} failed prod correlation check with value {pc}.")
                         else:
-                            self.logger.info(f"Alpha {alpha_id} failed self correlation check with value {sc}.")
+                            self.logger.info(
+                                f"Alpha {alpha_id} failed self correlation check with value {sc} "
+                                f"(Threshold: {SELF_CORRELATION_THRESHOLD})."
+                            )
                     except Exception as e:
                         self.logger.error(f"Error checking correlations for alpha {alpha_id}: {e}")
                 else:
